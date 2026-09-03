@@ -352,16 +352,24 @@
       els.quickHistoryList.innerHTML = '<p class="recent-rail-empty">暂无记录</p>';
       return;
     }
-    els.quickHistoryList.innerHTML = records.slice(0, 30).map((record) => {
+    els.quickHistoryList.innerHTML = records.slice(0, 10).map((record) => {
       const official = classify(record.officialDice, record.excludeTriples);
       const time = new Date(record.createdAt).toLocaleString("zh-CN", {
         month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
       });
+      const categories = official.combo === "triple"
+        ? '<strong class="category-chip triple">三同号</strong>'
+        : `<strong class="category-chip size">${LABELS[official.size]}</strong><strong class="category-chip parity">${LABELS[official.parity]}</strong>`;
       return `<article class="recent-rail-item">
         <span class="recent-rail-dot" aria-hidden="true"></span>
-        <div class="recent-rail-meta"><strong>${escapeHtml(record.issue || "未填期号")}</strong><time>${time}</time></div>
-        <div class="recent-rail-result"><span class="dice">${diceSymbols(record.officialDice)}</span><span>${resultLabel(official)}</span></div>
-        <span class="status ${record.validation.code}">${record.validation.label}</span>
+        <div class="recent-rail-primary">
+          <div class="recent-rail-categories">${categories}</div>
+          <span class="status ${record.validation.code}">${record.validation.label}</span>
+        </div>
+        <div class="recent-rail-secondary">
+          <span>和值 ${official.sum} · <span class="dice">${diceSymbols(record.officialDice)}</span></span>
+          <time>${time}</time>
+        </div>
       </article>`;
     }).join("");
   }
