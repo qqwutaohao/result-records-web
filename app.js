@@ -8,6 +8,7 @@
   const PENDING_KEY = "k3-verifier-pending-v1";
   const STREAMER_KEY = "k3-verifier-streamer-v1";
   const STREAMER_PROFILES_KEY = "k3-verifier-streamer-profiles-v1";
+  const STREAMER_SESSIONS_KEY = "k3-verifier-streamer-sessions-v1";
   const DEFAULT_TITLE = "结果记录台";
   const DEFAULT_STREAMER = "默认主播";
   const SESSION_GAP_MS = 30 * 60 * 1000;
@@ -35,6 +36,7 @@
     quickAnalysis: $("#quick-analysis"),
     quickAnalysisTitle: $("#quick-analysis-title"),
     quickAnalysisText: $("#quick-analysis-text"),
+    quickBaseline: $("#quick-baseline"),
     quickResult: $("#quick-result"),
     quickResultPreview: $("#quick-result-preview"),
     settlePrediction: $("#settle-prediction"),
@@ -49,6 +51,7 @@
     managedStreamerCount: $("#managed-streamer-count"),
     newStreamerName: $("#new-streamer-name"),
     addStreamer: $("#add-streamer"),
+    startNewSession: $("#start-new-session"),
     resetStreamer: $("#reset-streamer"),
     deleteStreamer: $("#delete-streamer"),
     streamerMessage: $("#streamer-message"),
@@ -103,6 +106,7 @@
   let bankroll = loadBankroll();
   let pendingPrediction = loadPendingPrediction();
   let streamerProfiles = loadStreamerProfiles();
+  let streamerSessions = loadStreamerSessions();
   let selectedStreamer = loadSelectedStreamer();
   if (!streamerProfiles.includes(selectedStreamer)) streamerProfiles.push(selectedStreamer);
   if (pendingPrediction?.streamerName && !streamerProfiles.includes(normalizeStreamer(pendingPrediction.streamerName))) {
@@ -237,17 +241,64 @@
     return normalizeStreamer(record.streamerName);
   }
 
-  function activeSessionId(streamerName) {
-    const now = Date.now();
+  function loadStreamerSessions() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STREAMER_SESSIONS_KEY) || "{}");
+      return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveStreamerSessions() {
+    localStorage.setItem(STREAMER_SESSIONS_KEY, JSON.stringify(streamerSessions));
+  }
+
+  function sameLocalDay(first, second) {
+    return first.getFullYear() === second.getFullYear()
+      && first.getMonth() === second.getMonth()
+      && first.getDate() === second.getDate();
+  }
+
+  function sessionIsActive(lastActiveAt) {
+    const last = new Date(lastActiveAt);
+    const now = new Date();
+    return Number.isFinite(last.getTime()) && sameLocalDay(last, now) && now.getTime() - last.getTime() <= SESSION_GAP_MS;
+  }
+
+  function createSession(streamerName) {
+    const now = new Date().toISOString();
+    const session = { id: `session-${Date.now()}-${Math.random().toString(16).slice(2)}`, lastActiveAt: now };
+    streamerSessions[streamerName] = session;
+    saveStreamerSessions();
+    return session.id;
+  }
+
+  function currentSessionId(streamerName, create = false) {
+    const saved = streamerSessions[streamerName];
+    if (saved?.id && sessionIsActive(saved.lastActiveAt)) return saved.id;
     const latest = records.find((record) => belongsToStreamer(record, streamerName));
-    if (latest?.sessionId && now - new Date(latest.createdAt).getTime() <= SESSION_GAP_MS) return latest.sessionId;
-    return `session-${now}-${Math.random().toString(16).slice(2)}`;
+    if (latest?.sessionId && sessionIsActive(latest.createdAt)) {
+      streamerSessions[streamerName] = { id: latest.sessionId, lastActiveAt: latest.createdAt };
+      saveStreamerSessions();
+      return latest.sessionId;
+    }
+    return create ? createSession(streamerName) : null;
+  }
+
+  function touchSession(streamerName, sessionId) {
+    streamerSessions[streamerName] = { id: sessionId, lastActiveAt: new Date().toISOString() };
+    saveStreamerSessions();
+  }
+
+  function activeSessionId(streamerName) {
+    return currentSessionId(streamerName, true);
   }
 
   function streamerStats(streamerName, sessionId = null) {
     const all = records.filter((record) => record.host && recordStreamer(record) === streamerName);
-    const recent = all.slice(0, 20);
     const session = sessionId ? all.filter((record) => record.sessionId === sessionId) : [];
+    const recent = session.slice(0, 20);
     const summarize = (items) => ({ total: items.length, matched: items.filter((record) => record.validation?.category).length });
     return { all: summarize(all), recent: summarize(recent), session: summarize(session) };
   }
@@ -271,8 +322,10 @@
 
   function renderStreamerDialog() {
     const count = records.filter((record) => belongsToStreamer(record, selectedStreamer)).length;
+    const sessionId = currentSessionId(selectedStreamer, false);
+    const currentCount = sessionId ? records.filter((record) => belongsToStreamer(record, selectedStreamer) && record.sessionId === sessionId).length : 0;
     els.managedStreamerName.textContent = selectedStreamer;
-    els.managedStreamerCount.textContent = `${count} 轮`;
+    els.managedStreamerCount.textContent = `本场 ${currentCount} 轮 · 档案 ${count} 轮`;
     els.resetStreamer.disabled = count === 0;
     els.deleteStreamer.disabled = streamerProfiles.length <= 1;
     els.deleteStreamer.title = streamerProfiles.length <= 1 ? "至少保留一个主播档案" : "";
@@ -289,11 +342,19 @@
     const existed = streamerProfiles.includes(name);
     if (!existed) streamerProfiles.push(name);
     saveSelectedStreamer(name);
+    createSession(name);
     els.newStreamerName.value = "";
     els.streamerMessage.className = "form-message success";
-    els.streamerMessage.textContent = existed ? "该主播已存在，已切换。" : "主播已添加并切换。";
+    els.streamerMessage.textContent = existed ? "该主播已存在，已切换并开始新场次。" : "主播已添加并开始新场次。";
     renderAll();
     renderStreamerDialog();
+  }
+
+  function beginNewSession(streamerName) {
+    cancelPendingForStreamer(streamerName);
+    createSession(streamerName);
+    els.quickMessage.className = "form-message success";
+    els.quickMessage.textContent = `“${streamerName}”已开始新场次，本场统计从 0 轮开始。`;
   }
 
   function cancelPendingForStreamer(streamerName) {
@@ -325,6 +386,7 @@
   function resetStreamerHistory(streamerName) {
     records = records.filter((record) => !belongsToStreamer(record, streamerName));
     cancelPendingForStreamer(streamerName);
+    createSession(streamerName);
     saveRecords();
     els.quickMessage.className = "form-message success";
     els.quickMessage.textContent = `已重置“${streamerName}”的历史记录。`;
@@ -334,9 +396,11 @@
     if (streamerProfiles.length <= 1) return;
     records = records.filter((record) => !belongsToStreamer(record, streamerName));
     streamerProfiles = streamerProfiles.filter((name) => name !== streamerName);
+    delete streamerSessions[streamerName];
     cancelPendingForStreamer(streamerName);
     if (selectedStreamer === streamerName) selectedStreamer = streamerProfiles[0];
     saveStreamerProfiles();
+    saveStreamerSessions();
     saveSelectedStreamer(selectedStreamer);
     saveRecords();
     els.quickMessage.className = "form-message success";
@@ -438,7 +502,7 @@
     return (counts[`big-${host.parity}`] + counts[`small-${host.parity}`]) / 216;
   }
 
-  function predictionHistory(host, streamerName) {
+  function predictionHistory(host, streamerName, sessionId) {
     if (!host) return { total: 0, matched: 0, systemTotal: 0, systemMatched: 0 };
     const matchesHost = (record) => {
       if (!record.host) return false;
@@ -450,8 +514,8 @@
       const official = classify(record.officialDice, record.excludeTriples);
       return (!host.size || official.size === host.size) && (!host.parity || official.parity === host.parity);
     };
-    const comparable = records.filter((record) => record.officialDice && recordStreamer(record) === streamerName && matchesHost(record));
-    const recent = records.filter((record) => record.officialDice).slice(0, 20);
+    const comparable = records.filter((record) => record.officialDice && record.sessionId === sessionId && recordStreamer(record) === streamerName && matchesHost(record));
+    const recent = records.filter((record) => record.officialDice && record.sessionId === sessionId).slice(0, 20);
     return {
       total: comparable.length,
       matched: comparable.filter(matchesOfficial).length,
@@ -460,8 +524,8 @@
     };
   }
 
-  function systemSnapshot(excludeTriples) {
-    const recent = records.filter((record) => record.officialDice).slice(0, 20);
+  function systemSnapshot(excludeTriples, sessionId) {
+    const recent = records.filter((record) => record.officialDice && record.sessionId === sessionId).slice(0, 20);
     const counts = { big: 0, small: 0, odd: 0, even: 0, triple: 0 };
     recent.forEach((record) => {
       const result = classify(record.officialDice, excludeTriples);
@@ -474,15 +538,25 @@
     return { total: recent.length, counts };
   }
 
+  function renderQuickBaseline(excludeTriples) {
+    const counts = enumerateProbabilities(excludeTriples);
+    const single = (counts["big-odd"] + counts["big-even"]) / 216;
+    els.quickBaseline.innerHTML = `
+      <span>理论基线 · 大/小/单/双单项均为 ${(single * 100).toFixed(2)}%</span>
+      <div class="quick-baseline-grid">${COMBOS.map(({ key, label }) => `<span>${label}<b>${((counts[key] / 216) * 100).toFixed(2)}%</b></span>`).join("")}</div>`;
+  }
+
   function renderQuickRound() {
     els.quickBalance.textContent = bankroll ? `余额 ${formatMoney(currentBalance())}` : "余额未设置";
     const locked = Boolean(pendingPrediction);
     const streamerName = locked ? normalizeStreamer(pendingPrediction.streamerName) : normalizeStreamer(els.quickStreamer.value);
-    const profile = streamerStats(streamerName, locked ? pendingPrediction.sessionId : null);
+    const sessionId = locked ? pendingPrediction.sessionId : currentSessionId(streamerName, false);
+    const profile = streamerStats(streamerName, sessionId);
+    renderQuickBaseline(locked ? pendingPrediction.excludeTriples : els.excludeTriples.checked);
     els.quickStreamer.disabled = locked;
     els.manageStreamers.disabled = locked;
     if (locked) els.quickStreamer.value = streamerName;
-    els.quickProfileStatus.textContent = confidenceLabel(profile.all.total);
+    els.quickProfileStatus.textContent = confidenceLabel(profile.session.total);
     $$('[data-quick-size], [data-quick-parity]').forEach((button) => {
       const dimension = button.dataset.quickSize ? "size" : "parity";
       const value = button.dataset.quickSize || button.dataset.quickParity;
@@ -501,9 +575,9 @@
     if (!locked) {
       els.quickAnalysis.classList.remove("ready");
       els.quickAnalysisTitle.textContent = `${streamerName} · 等待预判`;
-      els.quickAnalysisText.textContent = profile.all.total < 10
-        ? `主播档案已记录 ${profile.all.total}/10 轮。先选择大小、单双，或点击“主播观望”。`
-        : `主播档案 ${profile.all.total} 轮 · ${confidenceLabel(profile.all.total)}。等待本轮预判。`;
+      els.quickAnalysisText.textContent = profile.session.total < 10
+        ? `本场已记录 ${profile.session.total}/10 轮。旧档案 ${Math.max(0, profile.all.total - profile.session.total)} 轮不参与本场统计。`
+        : `本场 ${formatRatio(profile.session)} · ${confidenceLabel(profile.session.total)}。继续先锁定主播预判，再输入结果验证。`;
       els.quickResultPreview.textContent = "确认预判后输入结果";
       els.settlePrediction.disabled = true;
       return;
@@ -511,19 +585,19 @@
 
     els.quickAnalysis.classList.add("ready");
     if (pendingPrediction.observe) {
-      const snapshot = systemSnapshot(pendingPrediction.excludeTriples);
+      const snapshot = systemSnapshot(pendingPrediction.excludeTriples, sessionId);
       els.quickAnalysisTitle.textContent = `${streamerName} · 主播观望`;
       els.quickAnalysisText.textContent = snapshot.total
-        ? `系统近 ${snapshot.total} 期：大 ${snapshot.counts.big}、小 ${snapshot.counts.small}、单 ${snapshot.counts.odd}、双 ${snapshot.counts.even}${snapshot.counts.triple ? `、三同号 ${snapshot.counts.triple}` : ""}。主播档案：${confidenceLabel(profile.all.total)}；结论：观望。`
-        : "暂无历史记录。独立随机下没有可验证的方向优势；结论：观望。";
+        ? `本场 ${snapshot.total} 期：大 ${snapshot.counts.big}、小 ${snapshot.counts.small}、单 ${snapshot.counts.odd}、双 ${snapshot.counts.even}${snapshot.counts.triple ? `、三同号 ${snapshot.counts.triple}` : ""}。结论：观望。`
+        : "本场暂无历史记录。独立随机下没有可验证的方向优势；结论：观望。";
     } else {
       const host = pendingPrediction.host;
       const probability = predictionProbability(host, pendingPrediction.excludeTriples);
-      const history = predictionHistory(host, streamerName);
+      const history = predictionHistory(host, streamerName, sessionId);
       els.quickAnalysisTitle.textContent = `${streamerName} · ${predictionLabel(host)} · 理论 ${(probability * 100).toFixed(2)}%`;
-      els.quickAnalysisText.textContent = profile.all.total < 10
-        ? `主播档案 ${profile.all.total}/10 轮，仍在收集；该方向系统近 ${history.systemTotal} 期出现 ${history.systemMatched} 次。结论：观望。`
-        : `本场 ${formatRatio(profile.session)}；近20轮 ${formatRatio(profile.recent)}；长期 ${formatRatio(profile.all)}（${confidenceLabel(profile.all.total)}）。该方向系统近 ${history.systemTotal} 期出现 ${history.systemMatched} 次；结论：观望。`;
+      els.quickAnalysisText.textContent = profile.session.total < 10
+        ? `本场 ${profile.session.total}/10 轮，仍在收集；该方向本场出现 ${history.systemMatched}/${history.systemTotal}。旧数据不参与；结论：观望。`
+        : `本场 ${formatRatio(profile.session)}；本场近20轮 ${formatRatio(profile.recent)}（${confidenceLabel(profile.session.total)}）。该方向本场出现 ${history.systemMatched}/${history.systemTotal}；结论：观望。`;
     }
     const dice = parseQuickDice(els.quickResult.value);
     els.quickResultPreview.textContent = dice ? resultLabel(classify(dice, pendingPrediction.excludeTriples)) : "输入三个 1–6 的数字";
@@ -598,6 +672,8 @@
       return;
     }
     const host = pendingPrediction.host;
+    const streamerName = normalizeStreamer(pendingPrediction.streamerName);
+    const sessionId = pendingPrediction.sessionId || activeSessionId(streamerName);
     const validation = host
       ? validateRecord(dice, host, pendingPrediction.excludeTriples)
       : { code: "unverified", label: "主播观望", exact: false, category: false, sum: false };
@@ -608,13 +684,14 @@
       host,
       bet: null,
       source: "quick",
-      streamerName: normalizeStreamer(pendingPrediction.streamerName),
-      sessionId: pendingPrediction.sessionId || activeSessionId(normalizeStreamer(pendingPrediction.streamerName)),
+      streamerName,
+      sessionId,
       excludeTriples: pendingPrediction.excludeTriples,
       validation,
       predictionLockedAt: pendingPrediction.lockedAt,
       createdAt: new Date().toISOString(),
     });
+    touchSession(streamerName, sessionId);
     saveRecords();
     pendingPrediction = null;
     quickDraft = { size: "", parity: "" };
@@ -1044,6 +1121,7 @@
     const excludeTriples = els.excludeTriples.checked;
     const streamerName = normalizeStreamer(els.quickStreamer.value);
     saveSelectedStreamer(streamerName);
+    const sessionId = activeSessionId(streamerName);
     const betResult = betFromForm(officialDice, host, excludeTriples);
     if (betResult.error) {
       els.formMessage.textContent = betResult.error;
@@ -1055,12 +1133,13 @@
       officialDice,
       host,
       streamerName,
-      sessionId: activeSessionId(streamerName),
+      sessionId,
       bet: betResult.bet,
       excludeTriples,
       validation: validateRecord(officialDice, host, excludeTriples),
       createdAt: new Date().toISOString(),
     });
+    touchSession(streamerName, sessionId);
     saveRecords();
     ["official-1", "official-2", "official-3", "host-1", "host-2", "host-3"].forEach((id) => { $("#" + id).value = ""; });
     els.officialQuick.value = "";
@@ -1140,6 +1219,9 @@
   els.quickStreamer.addEventListener("change", () => {
     if (pendingPrediction) return;
     saveSelectedStreamer(els.quickStreamer.value);
+    createSession(selectedStreamer);
+    els.quickMessage.className = "form-message success";
+    els.quickMessage.textContent = `已切换到“${selectedStreamer}”，本场统计从 0 轮开始。`;
     renderAll();
   });
   els.manageStreamers.addEventListener("click", () => {
@@ -1150,6 +1232,13 @@
     els.streamerDialog.showModal();
   });
   els.addStreamer.addEventListener("click", addStreamerProfile);
+  els.startNewSession.addEventListener("click", () => {
+    beginNewSession(selectedStreamer);
+    els.streamerMessage.className = "form-message success";
+    els.streamerMessage.textContent = "新场次已开始，旧记录仍保留在档案中。";
+    renderAll();
+    renderStreamerDialog();
+  });
   els.newStreamerName.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter") {
@@ -1244,7 +1333,9 @@
     else if (confirmAction.type === "delete-streamer") deleteStreamerProfile(confirmAction.streamerName);
     else {
       records = [];
+      streamerSessions = {};
       saveRecords();
+      saveStreamerSessions();
     }
     renderAll();
   });
