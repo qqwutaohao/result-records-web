@@ -35,6 +35,8 @@
     quickResultPreview: $("#quick-result-preview"),
     settlePrediction: $("#settle-prediction"),
     quickMessage: $("#quick-message"),
+    quickHistoryCount: $("#quick-history-count"),
+    quickHistoryList: $("#quick-history-list"),
     initialBankroll: $("#initial-bankroll"),
     saveBankroll: $("#save-bankroll"),
     bankrollMessage: $("#bankroll-message"),
@@ -342,6 +344,26 @@
     const dice = parseQuickDice(els.quickResult.value);
     els.quickResultPreview.textContent = dice ? resultLabel(classify(dice, pendingPrediction.excludeTriples)) : "输入三个 1–6 的数字";
     els.settlePrediction.disabled = !dice;
+  }
+
+  function renderQuickHistory() {
+    els.quickHistoryCount.textContent = `${records.length} 期`;
+    if (!records.length) {
+      els.quickHistoryList.innerHTML = '<p class="recent-rail-empty">暂无记录</p>';
+      return;
+    }
+    els.quickHistoryList.innerHTML = records.slice(0, 30).map((record) => {
+      const official = classify(record.officialDice, record.excludeTriples);
+      const time = new Date(record.createdAt).toLocaleString("zh-CN", {
+        month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+      });
+      return `<article class="recent-rail-item">
+        <span class="recent-rail-dot" aria-hidden="true"></span>
+        <div class="recent-rail-meta"><strong>${escapeHtml(record.issue || "未填期号")}</strong><time>${time}</time></div>
+        <div class="recent-rail-result"><span class="dice">${diceSymbols(record.officialDice)}</span><span>${resultLabel(official)}</span></div>
+        <span class="status ${record.validation.code}">${record.validation.label}</span>
+      </article>`;
+    }).join("");
   }
 
   function lockQuickPrediction(observe = false) {
@@ -801,6 +823,7 @@
     renderAdvice();
     renderRecords();
     renderQuickRound();
+    renderQuickHistory();
   }
 
   function escapeHtml(value) {

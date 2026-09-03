@@ -25,6 +25,7 @@
     </header>
 
     <main>
+      <div class="quick-layout">
       <section class="quick-round" aria-labelledby="quick-title">
         <div class="quick-topline">
           <div>
@@ -70,6 +71,20 @@
         </div>
         <p id="quick-message" class="form-message" role="status" aria-live="polite"></p>
       </section>
+
+      <aside class="recent-rail" aria-labelledby="recent-rail-title">
+        <div class="recent-rail-heading">
+          <div>
+            <p class="step">最近记录</p>
+            <h2 id="recent-rail-title">历史长轴</h2>
+          </div>
+          <span id="quick-history-count">0 期</span>
+        </div>
+        <div id="quick-history-list" class="recent-rail-list">
+          <p class="recent-rail-empty">暂无记录</p>
+        </div>
+      </aside>
+      </div>
 
       <details class="advanced-tools">
         <summary><span>更多工具</span><small>本金、完整补录、截图、概率与历史</small></summary>
