@@ -6,7 +6,10 @@
   const BANKROLL_KEY = "k3-verifier-bankroll-v1";
   const TITLE_KEY = "k3-verifier-title-v1";
   const PENDING_KEY = "k3-verifier-pending-v1";
+  const STREAMER_KEY = "k3-verifier-streamer-v1";
   const DEFAULT_TITLE = "结果记录台";
+  const DEFAULT_STREAMER = "默认主播";
+  const SESSION_GAP_MS = 30 * 60 * 1000;
   const ODDS = 1.96;
   const OCR_SCRIPT = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
   const LABELS = { big: "大", small: "小", odd: "单", even: "双", triple: "三同号" };
@@ -37,6 +40,9 @@
     quickMessage: $("#quick-message"),
     quickHistoryCount: $("#quick-history-count"),
     quickHistoryList: $("#quick-history-list"),
+    quickStreamer: $("#quick-streamer"),
+    streamerProfiles: $("#streamer-profiles"),
+    quickProfileStatus: $("#quick-profile-status"),
     initialBankroll: $("#initial-bankroll"),
     saveBankroll: $("#save-bankroll"),
     bankrollMessage: $("#bankroll-message"),
@@ -84,12 +90,14 @@
   let records = loadRecords();
   let bankroll = loadBankroll();
   let pendingPrediction = loadPendingPrediction();
+  let selectedStreamer = loadSelectedStreamer();
   let quickDraft = { size: "", parity: "" };
   let ocrCandidates = [];
   let ocrRawSections = [];
   let ocrLibraryPromise = null;
   els.excludeTriples.checked = localStorage.getItem(RULE_KEY) !== "false";
   if (bankroll) els.initialBankroll.value = bankroll.initial;
+  els.quickStreamer.value = pendingPrediction?.streamerName || selectedStreamer;
 
   function applyTitle(title) {
     const value = title || DEFAULT_TITLE;
@@ -167,6 +175,58 @@
   function savePendingPrediction() {
     if (pendingPrediction) localStorage.setItem(PENDING_KEY, JSON.stringify(pendingPrediction));
     else localStorage.removeItem(PENDING_KEY);
+  }
+
+  function normalizeStreamer(value) {
+    return String(value || "").trim().slice(0, 20) || DEFAULT_STREAMER;
+  }
+
+  function loadSelectedStreamer() {
+    return normalizeStreamer(localStorage.getItem(STREAMER_KEY));
+  }
+
+  function saveSelectedStreamer(value) {
+    selectedStreamer = normalizeStreamer(value);
+    localStorage.setItem(STREAMER_KEY, selectedStreamer);
+    els.quickStreamer.value = selectedStreamer;
+  }
+
+  function recordStreamer(record) {
+    return normalizeStreamer(record.streamerName);
+  }
+
+  function activeSessionId(streamerName) {
+    const now = Date.now();
+    const latest = records.find((record) => (record.host || record.validation?.label === "主播观望") && recordStreamer(record) === streamerName);
+    if (latest?.sessionId && now - new Date(latest.createdAt).getTime() <= SESSION_GAP_MS) return latest.sessionId;
+    return `session-${now}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function streamerStats(streamerName, sessionId = null) {
+    const all = records.filter((record) => record.host && recordStreamer(record) === streamerName);
+    const recent = all.slice(0, 20);
+    const session = sessionId ? all.filter((record) => record.sessionId === sessionId) : [];
+    const summarize = (items) => ({ total: items.length, matched: items.filter((record) => record.validation?.category).length });
+    return { all: summarize(all), recent: summarize(recent), session: summarize(session) };
+  }
+
+  function confidenceLabel(total) {
+    if (total < 10) return `收集中 ${total}/10`;
+    if (total < 20) return "低可信度";
+    if (total < 50) return "初步趋势";
+    return "可供复盘";
+  }
+
+  function formatRatio(summary) {
+    return summary.total ? `${summary.matched}/${summary.total}` : "0/0";
+  }
+
+  function renderStreamerProfiles() {
+    const names = new Set([selectedStreamer]);
+    records.forEach((record) => {
+      if (record.host || record.validation?.label === "主播观望") names.add(recordStreamer(record));
+    });
+    els.streamerProfiles.innerHTML = [...names].map((name) => `<option value="${escapeHtml(name)}"></option>`).join("");
   }
 
   function roundMoney(value) {
@@ -264,7 +324,7 @@
     return (counts[`big-${host.parity}`] + counts[`small-${host.parity}`]) / 216;
   }
 
-  function predictionHistory(host) {
+  function predictionHistory(host, streamerName) {
     if (!host) return { total: 0, matched: 0, systemTotal: 0, systemMatched: 0 };
     const matchesHost = (record) => {
       if (!record.host) return false;
@@ -276,7 +336,7 @@
       const official = classify(record.officialDice, record.excludeTriples);
       return (!host.size || official.size === host.size) && (!host.parity || official.parity === host.parity);
     };
-    const comparable = records.filter((record) => record.officialDice && matchesHost(record));
+    const comparable = records.filter((record) => record.officialDice && recordStreamer(record) === streamerName && matchesHost(record));
     const recent = records.filter((record) => record.officialDice).slice(0, 20);
     return {
       total: comparable.length,
@@ -303,6 +363,11 @@
   function renderQuickRound() {
     els.quickBalance.textContent = bankroll ? `余额 ${formatMoney(currentBalance())}` : "余额未设置";
     const locked = Boolean(pendingPrediction);
+    const streamerName = locked ? normalizeStreamer(pendingPrediction.streamerName) : normalizeStreamer(els.quickStreamer.value);
+    const profile = streamerStats(streamerName, locked ? pendingPrediction.sessionId : null);
+    els.quickStreamer.disabled = locked;
+    if (locked) els.quickStreamer.value = streamerName;
+    els.quickProfileStatus.textContent = confidenceLabel(profile.all.total);
     $$('[data-quick-size], [data-quick-parity]').forEach((button) => {
       const dimension = button.dataset.quickSize ? "size" : "parity";
       const value = button.dataset.quickSize || button.dataset.quickParity;
@@ -320,8 +385,10 @@
 
     if (!locked) {
       els.quickAnalysis.classList.remove("ready");
-      els.quickAnalysisTitle.textContent = "等待主播预判";
-      els.quickAnalysisText.textContent = "先选择大小、单双，或点击“主播观望”。";
+      els.quickAnalysisTitle.textContent = `${streamerName} · 等待预判`;
+      els.quickAnalysisText.textContent = profile.all.total < 10
+        ? `主播档案已记录 ${profile.all.total}/10 轮。先选择大小、单双，或点击“主播观望”。`
+        : `主播档案 ${profile.all.total} 轮 · ${confidenceLabel(profile.all.total)}。等待本轮预判。`;
       els.quickResultPreview.textContent = "确认预判后输入结果";
       els.settlePrediction.disabled = true;
       return;
@@ -330,16 +397,18 @@
     els.quickAnalysis.classList.add("ready");
     if (pendingPrediction.observe) {
       const snapshot = systemSnapshot(pendingPrediction.excludeTriples);
-      els.quickAnalysisTitle.textContent = "主播观望 · 已锁定";
+      els.quickAnalysisTitle.textContent = `${streamerName} · 主播观望`;
       els.quickAnalysisText.textContent = snapshot.total
-        ? `最近 ${snapshot.total} 期：大 ${snapshot.counts.big}、小 ${snapshot.counts.small}、单 ${snapshot.counts.odd}、双 ${snapshot.counts.even}${snapshot.counts.triple ? `、三同号 ${snapshot.counts.triple}` : ""}。历史不改变下一期概率；结论：观望。`
+        ? `系统近 ${snapshot.total} 期：大 ${snapshot.counts.big}、小 ${snapshot.counts.small}、单 ${snapshot.counts.odd}、双 ${snapshot.counts.even}${snapshot.counts.triple ? `、三同号 ${snapshot.counts.triple}` : ""}。主播档案：${confidenceLabel(profile.all.total)}；结论：观望。`
         : "暂无历史记录。独立随机下没有可验证的方向优势；结论：观望。";
     } else {
       const host = pendingPrediction.host;
       const probability = predictionProbability(host, pendingPrediction.excludeTriples);
-      const history = predictionHistory(host);
-      els.quickAnalysisTitle.textContent = `${predictionLabel(host)} · 理论 ${(probability * 100).toFixed(2)}%`;
-      els.quickAnalysisText.textContent = `主播同方向 ${history.matched}/${history.total}；最近 ${history.systemTotal} 期出现 ${history.systemMatched} 次。历史不改变下一期概率；结论：无可证优势，观望。`;
+      const history = predictionHistory(host, streamerName);
+      els.quickAnalysisTitle.textContent = `${streamerName} · ${predictionLabel(host)} · 理论 ${(probability * 100).toFixed(2)}%`;
+      els.quickAnalysisText.textContent = profile.all.total < 10
+        ? `主播档案 ${profile.all.total}/10 轮，仍在收集；该方向系统近 ${history.systemTotal} 期出现 ${history.systemMatched} 次。结论：观望。`
+        : `本场 ${formatRatio(profile.session)}；近20轮 ${formatRatio(profile.recent)}；长期 ${formatRatio(profile.all)}（${confidenceLabel(profile.all.total)}）。该方向系统近 ${history.systemTotal} 期出现 ${history.systemMatched} 次；结论：观望。`;
     }
     const dice = parseQuickDice(els.quickResult.value);
     els.quickResultPreview.textContent = dice ? resultLabel(classify(dice, pendingPrediction.excludeTriples)) : "输入三个 1–6 的数字";
@@ -379,10 +448,14 @@
       els.quickMessage.textContent = "请选择主播预判，或点击“主播观望”。";
       return;
     }
+    const streamerName = normalizeStreamer(els.quickStreamer.value);
+    saveSelectedStreamer(streamerName);
     pendingPrediction = {
       id: `pending-${Date.now()}`,
       observe,
       host: observe ? null : { mode: "category", size: quickDraft.size, parity: quickDraft.parity },
+      streamerName,
+      sessionId: activeSessionId(streamerName),
       excludeTriples: els.excludeTriples.checked,
       lockedAt: new Date().toISOString(),
     };
@@ -420,6 +493,8 @@
       host,
       bet: null,
       source: "quick",
+      streamerName: normalizeStreamer(pendingPrediction.streamerName),
+      sessionId: pendingPrediction.sessionId || activeSessionId(normalizeStreamer(pendingPrediction.streamerName)),
       excludeTriples: pendingPrediction.excludeTriples,
       validation,
       predictionLockedAt: pendingPrediction.lockedAt,
@@ -538,14 +613,14 @@
 
   function formatHost(record) {
     if (!record.host) return record.validation?.label === "主播观望"
-      ? `<strong>主播观望</strong><span class="subline">仅记录官方结果</span>`
+      ? `<strong>主播观望</strong><span class="subline">${escapeHtml(recordStreamer(record))} · 仅记录官方结果</span>`
       : `<strong>截图导入</strong><span class="subline">待补主播结果</span>`;
     if (record.host.mode === "dice") {
       const result = classify(record.host.dice, record.excludeTriples);
-      return `<span class="dice">${diceSymbols(record.host.dice)}</span><span class="subline">${resultLabel(result)}</span>`;
+      return `<span class="dice">${diceSymbols(record.host.dice)}</span><span class="subline">${escapeHtml(recordStreamer(record))} · ${resultLabel(result)}</span>`;
     }
     const values = [record.host.size, record.host.parity].filter(Boolean).map((value) => LABELS[value]);
-    return `<strong>${values.join(" · ")}</strong><span class="subline">主播口播</span>`;
+    return `<strong>${values.join(" · ")}</strong><span class="subline">${escapeHtml(recordStreamer(record))} · 主播口播</span>`;
   }
 
   function renderHistory() {
@@ -832,6 +907,7 @@
     renderRecords();
     renderQuickRound();
     renderQuickHistory();
+    renderStreamerProfiles();
   }
 
   function escapeHtml(value) {
@@ -851,6 +927,8 @@
       return;
     }
     const excludeTriples = els.excludeTriples.checked;
+    const streamerName = normalizeStreamer(els.quickStreamer.value);
+    saveSelectedStreamer(streamerName);
     const betResult = betFromForm(officialDice, host, excludeTriples);
     if (betResult.error) {
       els.formMessage.textContent = betResult.error;
@@ -861,6 +939,8 @@
       issue: els.issue.value.trim(),
       officialDice,
       host,
+      streamerName,
+      sessionId: activeSessionId(streamerName),
       bet: betResult.bet,
       excludeTriples,
       validation: validateRecord(officialDice, host, excludeTriples),
@@ -891,7 +971,7 @@
       return;
     }
     const balances = balanceAfterEachRecord();
-    const rows = [["期号/备注", "时间", "官方骰子", "官方和值", "官方分类", "主播录入", "验证结果", "模拟方向", "投入", "赔率", "返还", "净盈亏", "轮后余额", "三同号排除"]];
+    const rows = [["期号/备注", "时间", "主播档案", "场次", "官方骰子", "官方和值", "官方分类", "主播录入", "验证结果", "模拟方向", "投入", "赔率", "返还", "净盈亏", "轮后余额", "三同号排除"]];
     records.forEach((record) => {
       const official = classify(record.officialDice, record.excludeTriples);
       const hostText = !record.host
@@ -902,6 +982,8 @@
       rows.push([
         record.issue,
         new Date(record.createdAt).toLocaleString("zh-CN", { hour12: false }),
+        record.host ? recordStreamer(record) : "",
+        record.sessionId || "",
         record.officialDice.join("-"),
         official.sum,
         official.combo === "triple" ? "三同号" : LABELS[official.size] + LABELS[official.parity],
@@ -939,6 +1021,18 @@
     if (event.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter") finishTitleEdit(true);
     if (event.key === "Escape") finishTitleEdit(false);
+  });
+  els.quickStreamer.addEventListener("input", () => {
+    if (!pendingPrediction) renderQuickRound();
+  });
+  els.quickStreamer.addEventListener("change", () => {
+    if (pendingPrediction) return;
+    saveSelectedStreamer(els.quickStreamer.value);
+    renderAll();
+  });
+  els.quickStreamer.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === "Enter") els.quickStreamer.blur();
   });
   $$('[data-quick-size], [data-quick-parity]').forEach((button) => button.addEventListener("click", () => {
     const dimension = button.dataset.quickSize ? "size" : "parity";

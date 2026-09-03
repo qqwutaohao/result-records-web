@@ -92,6 +92,9 @@ main { display: grid; gap: 14px; padding-bottom: 40px; }
 .quick-stage, .quick-analysis { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #0c1321; }
 .quick-stage-label { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; color: var(--text); font-weight: 700; }
 .quick-stage-label b { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--text); color: var(--bg); font-size: 0.75rem; }
+.quick-streamer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 7px; margin-bottom: 10px; }
+.quick-streamer-row input { height: 40px; margin-top: 5px; }
+.quick-profile-status { min-width: 64px; height: 40px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font-size: 0.7rem; line-height: 38px; text-align: center; white-space: nowrap; }
 .quick-choice-row { display: grid; grid-template-columns: 52px 1fr 1fr; gap: 6px; align-items: center; margin-bottom: 7px; }
 .quick-choice-row > span { color: var(--muted); font-size: 0.78rem; }
 .quick-choice-row button { min-height: 42px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); color: var(--muted); font-weight: 700; }

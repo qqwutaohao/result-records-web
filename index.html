@@ -38,6 +38,13 @@
         <div class="quick-flow">
           <div class="quick-stage">
             <div class="quick-stage-label"><b>1</b><span>主播预判</span></div>
+            <div class="quick-streamer-row">
+              <label>主播档案
+                <input id="quick-streamer" type="text" list="streamer-profiles" maxlength="20" autocomplete="off" placeholder="默认主播" />
+                <datalist id="streamer-profiles"></datalist>
+              </label>
+              <span id="quick-profile-status" class="quick-profile-status">0/10 轮</span>
+            </div>
             <div class="quick-choice-row">
               <span>大小</span>
               <button type="button" data-quick-size="big">大</button>
