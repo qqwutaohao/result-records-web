@@ -25,6 +25,55 @@
     </header>
 
     <main>
+      <section class="quick-round" aria-labelledby="quick-title">
+        <div class="quick-topline">
+          <div>
+            <p class="step">一分钟操作台</p>
+            <h2 id="quick-title">先预判，再验证</h2>
+          </div>
+          <span id="quick-balance" class="quick-balance">余额未设置</span>
+        </div>
+
+        <div class="quick-flow">
+          <div class="quick-stage">
+            <div class="quick-stage-label"><b>1</b><span>主播预判</span></div>
+            <div class="quick-choice-row">
+              <span>大小</span>
+              <button type="button" data-quick-size="big">大</button>
+              <button type="button" data-quick-size="small">小</button>
+            </div>
+            <div class="quick-choice-row">
+              <span>单双</span>
+              <button type="button" data-quick-parity="odd">单</button>
+              <button type="button" data-quick-parity="even">双</button>
+            </div>
+            <div class="quick-actions">
+              <button id="quick-watch" class="secondary-button" type="button">主播观望</button>
+              <button id="lock-prediction" class="primary-button" type="button">确认预判</button>
+            </div>
+          </div>
+
+          <div id="quick-analysis" class="quick-analysis">
+            <span>系统反馈</span>
+            <strong id="quick-analysis-title">等待主播预判</strong>
+            <p id="quick-analysis-text">先选择大小、单双，或点击“主播观望”。</p>
+          </div>
+
+          <div class="quick-stage">
+            <div class="quick-stage-label"><b>2</b><span>开奖结果</span></div>
+            <label class="quick-result-label">三个数字
+              <input id="quick-result" type="text" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="例如 425" disabled />
+            </label>
+            <div id="quick-result-preview" class="quick-result-preview">确认预判后输入结果</div>
+            <button id="settle-prediction" class="primary-button" type="button" disabled>验证并记录</button>
+          </div>
+        </div>
+        <p id="quick-message" class="form-message" role="status" aria-live="polite"></p>
+      </section>
+
+      <details class="advanced-tools">
+        <summary><span>更多工具</span><small>本金、完整补录、截图、概率与历史</small></summary>
+        <div class="advanced-content">
       <section class="panel bankroll-panel" aria-labelledby="bankroll-title">
         <div class="section-heading">
           <div>
@@ -237,6 +286,8 @@
         </div>
         <div id="records-empty" class="empty-state">暂无记录。先录入一期开奖结果。</div>
       </section>
+        </div>
+      </details>
 
       <section class="notice" aria-label="重要说明">
         <strong>概率说明</strong>

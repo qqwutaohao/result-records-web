@@ -5,6 +5,7 @@
   const RULE_KEY = "k3-verifier-exclude-triples-v1";
   const BANKROLL_KEY = "k3-verifier-bankroll-v1";
   const TITLE_KEY = "k3-verifier-title-v1";
+  const PENDING_KEY = "k3-verifier-pending-v1";
   const DEFAULT_TITLE = "结果记录台";
   const ODDS = 1.96;
   const OCR_SCRIPT = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
@@ -24,6 +25,16 @@
     appTitleInput: $("#app-title-input"),
     editTitle: $("#edit-title"),
     titleMessage: $("#title-message"),
+    quickBalance: $("#quick-balance"),
+    quickWatch: $("#quick-watch"),
+    lockPrediction: $("#lock-prediction"),
+    quickAnalysis: $("#quick-analysis"),
+    quickAnalysisTitle: $("#quick-analysis-title"),
+    quickAnalysisText: $("#quick-analysis-text"),
+    quickResult: $("#quick-result"),
+    quickResultPreview: $("#quick-result-preview"),
+    settlePrediction: $("#settle-prediction"),
+    quickMessage: $("#quick-message"),
     initialBankroll: $("#initial-bankroll"),
     saveBankroll: $("#save-bankroll"),
     bankrollMessage: $("#bankroll-message"),
@@ -70,6 +81,8 @@
 
   let records = loadRecords();
   let bankroll = loadBankroll();
+  let pendingPrediction = loadPendingPrediction();
+  let quickDraft = { size: "", parity: "" };
   let ocrCandidates = [];
   let ocrRawSections = [];
   let ocrLibraryPromise = null;
@@ -138,6 +151,20 @@
 
   function saveBankroll() {
     localStorage.setItem(BANKROLL_KEY, JSON.stringify(bankroll));
+  }
+
+  function loadPendingPrediction() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
+      return saved && saved.id && typeof saved.observe === "boolean" ? saved : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function savePendingPrediction() {
+    if (pendingPrediction) localStorage.setItem(PENDING_KEY, JSON.stringify(pendingPrediction));
+    else localStorage.removeItem(PENDING_KEY);
   }
 
   function roundMoney(value) {
@@ -220,6 +247,162 @@
   function resultLabel(result) {
     if (result.combo === "triple") return `和值 ${result.sum} · 三同号`;
     return `和值 ${result.sum} · ${LABELS[result.size]}${LABELS[result.parity]}${result.triple ? " · 三同号" : ""}`;
+  }
+
+  function predictionLabel(host) {
+    if (!host) return "主播观望";
+    return [host.size, host.parity].filter(Boolean).map((value) => LABELS[value]).join(" · ");
+  }
+
+  function predictionProbability(host, excludeTriples) {
+    if (!host) return null;
+    const counts = enumerateProbabilities(excludeTriples);
+    if (host.size && host.parity) return counts[`${host.size}-${host.parity}`] / 216;
+    if (host.size) return (counts[`${host.size}-odd`] + counts[`${host.size}-even`]) / 216;
+    return (counts[`big-${host.parity}`] + counts[`small-${host.parity}`]) / 216;
+  }
+
+  function predictionHistory(host) {
+    if (!host) return { total: 0, matched: 0, systemTotal: 0, systemMatched: 0 };
+    const matchesHost = (record) => {
+      if (!record.host) return false;
+      const recordedHost = record.host.mode === "dice" ? classify(record.host.dice, record.excludeTriples) : record.host;
+      return (!host.size || recordedHost.size === host.size)
+        && (!host.parity || recordedHost.parity === host.parity);
+    };
+    const matchesOfficial = (record) => {
+      const official = classify(record.officialDice, record.excludeTriples);
+      return (!host.size || official.size === host.size) && (!host.parity || official.parity === host.parity);
+    };
+    const comparable = records.filter((record) => record.officialDice && matchesHost(record));
+    const recent = records.filter((record) => record.officialDice).slice(0, 20);
+    return {
+      total: comparable.length,
+      matched: comparable.filter(matchesOfficial).length,
+      systemTotal: recent.length,
+      systemMatched: recent.filter(matchesOfficial).length,
+    };
+  }
+
+  function systemSnapshot(excludeTriples) {
+    const recent = records.filter((record) => record.officialDice).slice(0, 20);
+    const counts = { big: 0, small: 0, odd: 0, even: 0, triple: 0 };
+    recent.forEach((record) => {
+      const result = classify(record.officialDice, excludeTriples);
+      if (result.combo === "triple") counts.triple += 1;
+      else {
+        counts[result.size] += 1;
+        counts[result.parity] += 1;
+      }
+    });
+    return { total: recent.length, counts };
+  }
+
+  function renderQuickRound() {
+    els.quickBalance.textContent = bankroll ? `余额 ${formatMoney(currentBalance())}` : "余额未设置";
+    const locked = Boolean(pendingPrediction);
+    $$('[data-quick-size], [data-quick-parity]').forEach((button) => {
+      const dimension = button.dataset.quickSize ? "size" : "parity";
+      const value = button.dataset.quickSize || button.dataset.quickParity;
+      const selected = locked
+        ? !pendingPrediction.observe && pendingPrediction.host?.[dimension] === value
+        : quickDraft[dimension] === value;
+      button.classList.toggle("selected", selected);
+      button.disabled = locked;
+    });
+    els.quickWatch.disabled = locked;
+    els.lockPrediction.textContent = locked ? "取消预判" : "确认预判";
+    els.lockPrediction.classList.toggle("secondary-button", locked);
+    els.lockPrediction.classList.toggle("primary-button", !locked);
+    els.quickResult.disabled = !locked;
+
+    if (!locked) {
+      els.quickAnalysis.classList.remove("ready");
+      els.quickAnalysisTitle.textContent = "等待主播预判";
+      els.quickAnalysisText.textContent = "先选择大小、单双，或点击“主播观望”。";
+      els.quickResultPreview.textContent = "确认预判后输入结果";
+      els.settlePrediction.disabled = true;
+      return;
+    }
+
+    els.quickAnalysis.classList.add("ready");
+    if (pendingPrediction.observe) {
+      const snapshot = systemSnapshot(pendingPrediction.excludeTriples);
+      els.quickAnalysisTitle.textContent = "主播观望 · 已锁定";
+      els.quickAnalysisText.textContent = snapshot.total
+        ? `最近 ${snapshot.total} 期：大 ${snapshot.counts.big}、小 ${snapshot.counts.small}、单 ${snapshot.counts.odd}、双 ${snapshot.counts.even}${snapshot.counts.triple ? `、三同号 ${snapshot.counts.triple}` : ""}。历史不改变下一期概率；结论：观望。`
+        : "暂无历史记录。独立随机下没有可验证的方向优势；结论：观望。";
+    } else {
+      const host = pendingPrediction.host;
+      const probability = predictionProbability(host, pendingPrediction.excludeTriples);
+      const history = predictionHistory(host);
+      els.quickAnalysisTitle.textContent = `${predictionLabel(host)} · 理论 ${(probability * 100).toFixed(2)}%`;
+      els.quickAnalysisText.textContent = `主播同方向 ${history.matched}/${history.total}；最近 ${history.systemTotal} 期出现 ${history.systemMatched} 次。历史不改变下一期概率；结论：无可证优势，观望。`;
+    }
+    const dice = parseQuickDice(els.quickResult.value);
+    els.quickResultPreview.textContent = dice ? resultLabel(classify(dice, pendingPrediction.excludeTriples)) : "输入三个 1–6 的数字";
+    els.settlePrediction.disabled = !dice;
+  }
+
+  function lockQuickPrediction(observe = false) {
+    if (!observe && !quickDraft.size && !quickDraft.parity) {
+      els.quickMessage.textContent = "请选择主播预判，或点击“主播观望”。";
+      return;
+    }
+    pendingPrediction = {
+      id: `pending-${Date.now()}`,
+      observe,
+      host: observe ? null : { mode: "category", size: quickDraft.size, parity: quickDraft.parity },
+      excludeTriples: els.excludeTriples.checked,
+      lockedAt: new Date().toISOString(),
+    };
+    savePendingPrediction();
+    els.quickMessage.className = "form-message success";
+    els.quickMessage.textContent = observe ? "已记录主播观望，等待开奖结果。" : `已锁定：${predictionLabel(pendingPrediction.host)}。`;
+    renderQuickRound();
+    els.quickResult.focus();
+  }
+
+  function cancelQuickPrediction() {
+    pendingPrediction = null;
+    savePendingPrediction();
+    els.quickResult.value = "";
+    els.quickMessage.className = "form-message";
+    els.quickMessage.textContent = "预判已取消，可重新选择。";
+    renderQuickRound();
+  }
+
+  function settleQuickPrediction() {
+    if (!pendingPrediction) return;
+    const dice = parseQuickDice(els.quickResult.value);
+    if (!dice) {
+      els.quickMessage.textContent = "请输入三个 1–6 的数字。";
+      return;
+    }
+    const host = pendingPrediction.host;
+    const validation = host
+      ? validateRecord(dice, host, pendingPrediction.excludeTriples)
+      : { code: "unverified", label: "主播观望", exact: false, category: false, sum: false };
+    records.unshift({
+      id: `quick-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      issue: "一分钟验证",
+      officialDice: dice,
+      host,
+      bet: null,
+      source: "quick",
+      excludeTriples: pendingPrediction.excludeTriples,
+      validation,
+      predictionLockedAt: pendingPrediction.lockedAt,
+      createdAt: new Date().toISOString(),
+    });
+    saveRecords();
+    pendingPrediction = null;
+    quickDraft = { size: "", parity: "" };
+    savePendingPrediction();
+    els.quickResult.value = "";
+    els.quickMessage.className = "form-message success";
+    els.quickMessage.textContent = host ? `已验证：${validation.label}。` : "已记录开奖结果：主播本轮观望。";
+    renderAll();
   }
 
   function hostFromForm() {
@@ -324,7 +507,9 @@
   }
 
   function formatHost(record) {
-    if (!record.host) return `<strong>截图导入</strong><span class="subline">待补主播结果</span>`;
+    if (!record.host) return record.validation?.label === "主播观望"
+      ? `<strong>主播观望</strong><span class="subline">仅记录官方结果</span>`
+      : `<strong>截图导入</strong><span class="subline">待补主播结果</span>`;
     if (record.host.mode === "dice") {
       const result = classify(record.host.dice, record.excludeTriples);
       return `<span class="dice">${diceSymbols(record.host.dice)}</span><span class="subline">${resultLabel(result)}</span>`;
@@ -615,6 +800,7 @@
     renderHistory();
     renderAdvice();
     renderRecords();
+    renderQuickRound();
   }
 
   function escapeHtml(value) {
@@ -719,9 +905,28 @@
     else finishTitleEdit(true);
   });
   els.appTitleInput.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter") finishTitleEdit(true);
     if (event.key === "Escape") finishTitleEdit(false);
   });
+  $$('[data-quick-size], [data-quick-parity]').forEach((button) => button.addEventListener("click", () => {
+    const dimension = button.dataset.quickSize ? "size" : "parity";
+    const value = button.dataset.quickSize || button.dataset.quickParity;
+    quickDraft[dimension] = quickDraft[dimension] === value ? "" : value;
+    els.quickMessage.textContent = "";
+    renderQuickRound();
+  }));
+  els.quickWatch.addEventListener("click", () => lockQuickPrediction(true));
+  els.lockPrediction.addEventListener("click", () => {
+    if (pendingPrediction) cancelQuickPrediction();
+    else lockQuickPrediction(false);
+  });
+  els.quickResult.addEventListener("input", renderQuickRound);
+  els.quickResult.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === "Enter" && !els.settlePrediction.disabled) settleQuickPrediction();
+  });
+  els.settlePrediction.addEventListener("click", settleQuickPrediction);
   els.officialQuick.addEventListener("input", () => {
     const dice = parseQuickDice(els.officialQuick.value);
     els.officialQuick.classList.toggle("valid", Boolean(dice));

@@ -21,10 +21,7 @@
 body {
   min-width: 320px;
   margin: 0;
-  background:
-    radial-gradient(circle at 85% -5%, rgba(45, 212, 191, 0.16), transparent 28rem),
-    radial-gradient(circle at -10% 30%, rgba(56, 189, 248, 0.09), transparent 26rem),
-    var(--bg);
+  background: var(--bg);
   color: var(--text);
   line-height: 1.55;
 }
@@ -42,7 +39,7 @@ button { cursor: pointer; }
   align-items: end;
   justify-content: space-between;
   gap: 24px;
-  padding: 58px 0 28px;
+  padding: 24px 0 18px;
 }
 
 .eyebrow, .step {
@@ -54,14 +51,14 @@ button { cursor: pointer; }
   text-transform: uppercase;
 }
 
-h1 { margin: 0; font-size: clamp(2rem, 6vw, 4.4rem); line-height: 1.05; letter-spacing: -0.055em; }
+h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 3.2rem); line-height: 1.05; letter-spacing: -0.045em; }
 h2 { margin: 0; font-size: clamp(1.25rem, 3vw, 1.7rem); letter-spacing: -0.025em; }
 .title-editor { display: flex; align-items: center; gap: 12px; }
 .title-editor input[type="text"] { width: min(620px, 64vw); height: auto; margin: 0; padding: 5px 10px 7px; font-size: clamp(2rem, 6vw, 4.4rem); font-weight: 800; line-height: 1.05; letter-spacing: -0.055em; }
 .title-edit-button { flex: 0 0 auto; min-height: 34px; border: 1px solid var(--line); border-radius: 999px; padding: 0 11px; background: rgba(16, 24, 39, 0.72); color: var(--muted); font-size: 0.75rem; font-weight: 700; }
 .title-edit-button:hover { border-color: var(--accent-strong); color: var(--text); }
 .title-message { min-height: 1.2em; margin: 4px 0 -4px; color: var(--accent); font-size: 0.76rem; }
-.hero-copy { max-width: 620px; margin: 14px 0 0; color: var(--muted); font-size: 1.02rem; }
+.hero-copy, .privacy-badge { display: none; }
 
 .privacy-badge, .formula-note {
   color: var(--muted);
@@ -76,16 +73,47 @@ h2 { margin: 0; font-size: clamp(1.25rem, 3vw, 1.7rem); letter-spacing: -0.025em
   background: rgba(16, 24, 39, 0.72);
 }
 
-main { display: grid; gap: 18px; padding-bottom: 56px; }
+main { display: grid; gap: 14px; padding-bottom: 40px; }
 
 .panel {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: rgba(16, 24, 39, 0.9);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.18);
+  box-shadow: none;
   padding: clamp(20px, 3vw, 30px);
 }
+
+.quick-round { min-width: 0; padding: 24px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.quick-topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.quick-balance { padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 0.76rem; white-space: nowrap; }
+.quick-flow { display: grid; grid-template-columns: 1fr 1.12fr 1fr; gap: 12px; }
+.quick-stage, .quick-analysis { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #0c1321; }
+.quick-stage-label { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; color: var(--text); font-weight: 700; }
+.quick-stage-label b { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--text); color: var(--bg); font-size: 0.75rem; }
+.quick-choice-row { display: grid; grid-template-columns: 52px 1fr 1fr; gap: 6px; align-items: center; margin-bottom: 7px; }
+.quick-choice-row > span { color: var(--muted); font-size: 0.78rem; }
+.quick-choice-row button { min-height: 42px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); color: var(--muted); font-weight: 700; }
+.quick-choice-row button.selected { border-color: var(--accent); background: rgba(94, 234, 212, 0.1); color: var(--accent); }
+.quick-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 12px; }
+.quick-analysis { display: flex; min-height: 188px; align-items: flex-start; justify-content: center; flex-direction: column; }
+.quick-analysis > span { color: var(--muted); font-size: 0.72rem; }
+.quick-analysis strong { display: block; margin-top: 5px; font-size: 1.15rem; }
+.quick-analysis p { margin: 8px 0 0; color: var(--muted); font-size: 0.84rem; line-height: 1.6; }
+.quick-analysis.ready { border-color: rgba(94, 234, 212, 0.45); }
+.quick-result-label { display: block; }
+.quick-result-label input { height: 50px; font-size: 1.15rem; font-weight: 700; letter-spacing: 0.08em; }
+.quick-result-preview { min-height: 25px; margin: 8px 0 12px; color: var(--muted); font-size: 0.78rem; }
+.quick-stage > .primary-button { width: 100%; }
+.quick-round .form-message { margin-bottom: -6px; }
+
+.advanced-tools { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.advanced-tools > summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 18px; color: var(--text); cursor: pointer; list-style: none; }
+.advanced-tools > summary::-webkit-details-marker { display: none; }
+.advanced-tools > summary::after { content: "+"; color: var(--muted); font-size: 1.2rem; }
+.advanced-tools[open] > summary::after { content: "−"; }
+.advanced-tools > summary small { margin-left: auto; color: var(--muted); font-size: 0.76rem; font-weight: 500; }
+.advanced-content { display: grid; gap: 14px; padding: 0 14px 14px; }
 
 .section-heading {
   display: flex;
@@ -276,7 +304,9 @@ dialog p { color: var(--muted); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
 @media (max-width: 760px) {
-  .hero { align-items: flex-start; flex-direction: column; padding-top: 34px; }
+  .hero { align-items: flex-start; flex-direction: column; padding-top: 18px; }
+  .quick-flow { grid-template-columns: 1fr; }
+  .quick-analysis { min-height: 132px; }
   .entry-grid, .dashboard-grid { grid-template-columns: 1fr; }
   .bankroll-layout { grid-template-columns: 1fr; }
   .bankroll-summary { grid-template-columns: 1fr 1fr; }
@@ -299,6 +329,10 @@ dialog p { color: var(--muted); }
 @media (max-width: 470px) {
   .hero, main { width: min(100% - 20px, 1180px); }
   .panel { border-radius: 16px; padding: 17px; }
+  .quick-round { padding: 16px; }
+  .quick-topline { align-items: flex-start; }
+  .advanced-tools > summary { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .advanced-tools > summary small { margin-left: 0; }
   fieldset { padding: 15px; }
   .probability-grid { gap: 8px; }
   .probability-card { padding: 14px 12px; }
