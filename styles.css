@@ -92,9 +92,10 @@ main { display: grid; gap: 14px; padding-bottom: 40px; }
 .quick-stage, .quick-analysis { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #0c1321; }
 .quick-stage-label { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; color: var(--text); font-weight: 700; }
 .quick-stage-label b { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--text); color: var(--bg); font-size: 0.75rem; }
-.quick-streamer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 7px; margin-bottom: 10px; }
-.quick-streamer-row input { height: 40px; margin-top: 5px; }
-.quick-profile-status { min-width: 64px; height: 40px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font-size: 0.7rem; line-height: 38px; text-align: center; white-space: nowrap; }
+.quick-streamer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 6px 7px; margin-bottom: 10px; }
+.quick-streamer-row select { height: 40px; margin-top: 5px; padding-inline: 9px 24px; }
+.compact-button { min-height: 40px; padding-inline: 10px; font-size: 0.72rem; }
+.quick-profile-status { grid-column: 1 / -1; justify-self: start; min-width: 64px; height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 0.68rem; line-height: 22px; text-align: center; white-space: nowrap; }
 .quick-choice-row { display: grid; grid-template-columns: 52px 1fr 1fr; gap: 6px; align-items: center; margin-bottom: 7px; }
 .quick-choice-row > span { color: var(--muted); font-size: 0.78rem; }
 .quick-choice-row button { min-height: 42px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); color: var(--muted); font-weight: 700; }
@@ -252,6 +253,7 @@ input:focus, select:focus { border-color: var(--accent-strong); box-shadow: 0 0 
 .primary-button:disabled { cursor: not-allowed; opacity: 0.45; }
 .secondary-button { border: 1px solid var(--line); background: #172236; color: var(--text); }
 .danger-button { border: 1px solid rgba(251, 113, 133, 0.32); background: rgba(251, 113, 133, 0.08); color: #fda4af; }
+.secondary-button:disabled, .danger-button:disabled { cursor: not-allowed; opacity: 0.42; }
 .icon-button { min-height: 34px; padding: 0 10px; border: 0; background: transparent; color: var(--muted); }
 .icon-button:hover { color: var(--danger); }
 .form-message { min-height: 1.5em; margin: 10px 0 0; color: var(--danger); font-size: 0.88rem; }
@@ -325,6 +327,9 @@ dialog { width: min(420px, calc(100% - 32px)); border: 1px solid var(--line); bo
 dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
 dialog h2 { margin-bottom: 8px; }
 dialog p { color: var(--muted); }
+.streamer-create-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 9px; margin-top: 20px; }
+.streamer-create-row .primary-button { white-space: nowrap; }
+.streamer-manage-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 18px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
@@ -376,6 +381,7 @@ dialog p { color: var(--muted); }
   .bankroll-setup button { width: 100%; }
   .simulation-grid { grid-template-columns: 1fr; }
   .settlement-rule { grid-column: auto; }
+  .streamer-create-row, .streamer-manage-actions { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

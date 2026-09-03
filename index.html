@@ -40,9 +40,9 @@
             <div class="quick-stage-label"><b>1</b><span>主播预判</span></div>
             <div class="quick-streamer-row">
               <label>主播档案
-                <input id="quick-streamer" type="text" list="streamer-profiles" maxlength="20" autocomplete="off" placeholder="默认主播" />
-                <datalist id="streamer-profiles"></datalist>
+                <select id="quick-streamer" aria-label="选择主播档案"></select>
               </label>
+              <button id="manage-streamers" class="secondary-button compact-button" type="button">管理</button>
               <span id="quick-profile-status" class="quick-profile-status">0/10 轮</span>
             </div>
             <div class="quick-choice-row">
@@ -317,13 +317,32 @@
       </section>
     </main>
 
+    <dialog id="streamer-dialog">
+      <form method="dialog">
+        <h2>主播档案管理</h2>
+        <p>当前：<strong id="managed-streamer-name">默认主播</strong> · <span id="managed-streamer-count">0 轮</span></p>
+        <div class="streamer-create-row">
+          <label>新主播名称<input id="new-streamer-name" type="text" maxlength="20" autocomplete="off" placeholder="例如：主播A" /></label>
+          <button id="add-streamer" class="primary-button" type="button">添加并切换</button>
+        </div>
+        <p id="streamer-message" class="form-message" role="status" aria-live="polite"></p>
+        <div class="streamer-manage-actions">
+          <button id="reset-streamer" class="secondary-button" type="button">重置当前历史</button>
+          <button id="delete-streamer" class="danger-button" type="button">删除当前主播</button>
+        </div>
+        <div class="dialog-actions">
+          <button value="cancel" class="secondary-button">完成</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="confirm-dialog">
       <form method="dialog">
-        <h2>清空全部轮次？</h2>
-        <p>此操作无法撤销，验证与资金流水会被删除；已设置的模拟本金保留。</p>
+        <h2 id="confirm-title">清空全部轮次？</h2>
+        <p id="confirm-text">此操作无法撤销，验证与资金流水会被删除；已设置的模拟本金保留。</p>
         <div class="dialog-actions">
           <button value="cancel" class="secondary-button">取消</button>
-          <button value="confirm" class="danger-button">确认清空</button>
+          <button id="confirm-submit" value="confirm" class="danger-button">确认清空</button>
         </div>
       </form>
     </dialog>

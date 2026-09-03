@@ -7,6 +7,7 @@
   const TITLE_KEY = "k3-verifier-title-v1";
   const PENDING_KEY = "k3-verifier-pending-v1";
   const STREAMER_KEY = "k3-verifier-streamer-v1";
+  const STREAMER_PROFILES_KEY = "k3-verifier-streamer-profiles-v1";
   const DEFAULT_TITLE = "结果记录台";
   const DEFAULT_STREAMER = "默认主播";
   const SESSION_GAP_MS = 30 * 60 * 1000;
@@ -41,8 +42,16 @@
     quickHistoryCount: $("#quick-history-count"),
     quickHistoryList: $("#quick-history-list"),
     quickStreamer: $("#quick-streamer"),
-    streamerProfiles: $("#streamer-profiles"),
+    manageStreamers: $("#manage-streamers"),
     quickProfileStatus: $("#quick-profile-status"),
+    streamerDialog: $("#streamer-dialog"),
+    managedStreamerName: $("#managed-streamer-name"),
+    managedStreamerCount: $("#managed-streamer-count"),
+    newStreamerName: $("#new-streamer-name"),
+    addStreamer: $("#add-streamer"),
+    resetStreamer: $("#reset-streamer"),
+    deleteStreamer: $("#delete-streamer"),
+    streamerMessage: $("#streamer-message"),
     initialBankroll: $("#initial-bankroll"),
     saveBankroll: $("#save-bankroll"),
     bankrollMessage: $("#bankroll-message"),
@@ -73,6 +82,9 @@
     exportData: $("#export-data"),
     clearData: $("#clear-data"),
     confirmDialog: $("#confirm-dialog"),
+    confirmTitle: $("#confirm-title"),
+    confirmText: $("#confirm-text"),
+    confirmSubmit: $("#confirm-submit"),
     ocrDropzone: $("#ocr-dropzone"),
     ocrFiles: $("#ocr-files"),
     ocrProgress: $("#ocr-progress"),
@@ -90,14 +102,20 @@
   let records = loadRecords();
   let bankroll = loadBankroll();
   let pendingPrediction = loadPendingPrediction();
+  let streamerProfiles = loadStreamerProfiles();
   let selectedStreamer = loadSelectedStreamer();
+  if (!streamerProfiles.includes(selectedStreamer)) streamerProfiles.push(selectedStreamer);
+  if (pendingPrediction?.streamerName && !streamerProfiles.includes(normalizeStreamer(pendingPrediction.streamerName))) {
+    streamerProfiles.push(normalizeStreamer(pendingPrediction.streamerName));
+  }
+  saveStreamerProfiles();
   let quickDraft = { size: "", parity: "" };
+  let confirmAction = { type: "clear-all" };
   let ocrCandidates = [];
   let ocrRawSections = [];
   let ocrLibraryPromise = null;
   els.excludeTriples.checked = localStorage.getItem(RULE_KEY) !== "false";
   if (bankroll) els.initialBankroll.value = bankroll.initial;
-  els.quickStreamer.value = pendingPrediction?.streamerName || selectedStreamer;
 
   function applyTitle(title) {
     const value = title || DEFAULT_TITLE;
@@ -185,10 +203,34 @@
     return normalizeStreamer(localStorage.getItem(STREAMER_KEY));
   }
 
+  function belongsToStreamer(record, streamerName) {
+    return (record.host || record.validation?.label === "主播观望") && recordStreamer(record) === streamerName;
+  }
+
+  function loadStreamerProfiles() {
+    let saved = [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STREAMER_PROFILES_KEY) || "[]");
+      if (Array.isArray(parsed)) saved = parsed.map(normalizeStreamer);
+    } catch {
+      saved = [];
+    }
+    records.forEach((record) => {
+      if (record.host || record.validation?.label === "主播观望") saved.push(recordStreamer(record));
+    });
+    const unique = [...new Set(saved)];
+    return unique.length ? unique : [DEFAULT_STREAMER];
+  }
+
+  function saveStreamerProfiles() {
+    localStorage.setItem(STREAMER_PROFILES_KEY, JSON.stringify(streamerProfiles));
+  }
+
   function saveSelectedStreamer(value) {
     selectedStreamer = normalizeStreamer(value);
+    if (!streamerProfiles.includes(selectedStreamer)) streamerProfiles.push(selectedStreamer);
+    saveStreamerProfiles();
     localStorage.setItem(STREAMER_KEY, selectedStreamer);
-    els.quickStreamer.value = selectedStreamer;
   }
 
   function recordStreamer(record) {
@@ -197,7 +239,7 @@
 
   function activeSessionId(streamerName) {
     const now = Date.now();
-    const latest = records.find((record) => (record.host || record.validation?.label === "主播观望") && recordStreamer(record) === streamerName);
+    const latest = records.find((record) => belongsToStreamer(record, streamerName));
     if (latest?.sessionId && now - new Date(latest.createdAt).getTime() <= SESSION_GAP_MS) return latest.sessionId;
     return `session-${now}-${Math.random().toString(16).slice(2)}`;
   }
@@ -222,11 +264,83 @@
   }
 
   function renderStreamerProfiles() {
-    const names = new Set([selectedStreamer]);
-    records.forEach((record) => {
-      if (record.host || record.validation?.label === "主播观望") names.add(recordStreamer(record));
-    });
-    els.streamerProfiles.innerHTML = [...names].map((name) => `<option value="${escapeHtml(name)}"></option>`).join("");
+    const active = pendingPrediction ? normalizeStreamer(pendingPrediction.streamerName) : selectedStreamer;
+    els.quickStreamer.innerHTML = streamerProfiles.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+    els.quickStreamer.value = active;
+  }
+
+  function renderStreamerDialog() {
+    const count = records.filter((record) => belongsToStreamer(record, selectedStreamer)).length;
+    els.managedStreamerName.textContent = selectedStreamer;
+    els.managedStreamerCount.textContent = `${count} 轮`;
+    els.resetStreamer.disabled = count === 0;
+    els.deleteStreamer.disabled = streamerProfiles.length <= 1;
+    els.deleteStreamer.title = streamerProfiles.length <= 1 ? "至少保留一个主播档案" : "";
+  }
+
+  function addStreamerProfile() {
+    const raw = els.newStreamerName.value.trim();
+    if (!raw) {
+      els.streamerMessage.textContent = "请输入主播名称。";
+      els.newStreamerName.focus();
+      return;
+    }
+    const name = normalizeStreamer(raw);
+    const existed = streamerProfiles.includes(name);
+    if (!existed) streamerProfiles.push(name);
+    saveSelectedStreamer(name);
+    els.newStreamerName.value = "";
+    els.streamerMessage.className = "form-message success";
+    els.streamerMessage.textContent = existed ? "该主播已存在，已切换。" : "主播已添加并切换。";
+    renderAll();
+    renderStreamerDialog();
+  }
+
+  function cancelPendingForStreamer(streamerName) {
+    if (!pendingPrediction || normalizeStreamer(pendingPrediction.streamerName) !== streamerName) return;
+    pendingPrediction = null;
+    quickDraft = { size: "", parity: "" };
+    els.quickResult.value = "";
+    savePendingPrediction();
+  }
+
+  function openConfirm(type, streamerName = null) {
+    confirmAction = { type, streamerName };
+    if (type === "reset-streamer") {
+      els.confirmTitle.textContent = `重置“${streamerName}”的历史？`;
+      els.confirmText.textContent = "将删除该主播的全部轮次，但保留主播档案。此操作无法撤销。";
+      els.confirmSubmit.textContent = "确认重置";
+    } else if (type === "delete-streamer") {
+      els.confirmTitle.textContent = `删除“${streamerName}”？`;
+      els.confirmText.textContent = "将同时删除该主播档案及其全部轮次。此操作无法撤销。";
+      els.confirmSubmit.textContent = "确认删除";
+    } else {
+      els.confirmTitle.textContent = "清空全部轮次？";
+      els.confirmText.textContent = "此操作无法撤销，验证与资金流水会被删除；主播档案和模拟本金保留。";
+      els.confirmSubmit.textContent = "确认清空";
+    }
+    els.confirmDialog.showModal();
+  }
+
+  function resetStreamerHistory(streamerName) {
+    records = records.filter((record) => !belongsToStreamer(record, streamerName));
+    cancelPendingForStreamer(streamerName);
+    saveRecords();
+    els.quickMessage.className = "form-message success";
+    els.quickMessage.textContent = `已重置“${streamerName}”的历史记录。`;
+  }
+
+  function deleteStreamerProfile(streamerName) {
+    if (streamerProfiles.length <= 1) return;
+    records = records.filter((record) => !belongsToStreamer(record, streamerName));
+    streamerProfiles = streamerProfiles.filter((name) => name !== streamerName);
+    cancelPendingForStreamer(streamerName);
+    if (selectedStreamer === streamerName) selectedStreamer = streamerProfiles[0];
+    saveStreamerProfiles();
+    saveSelectedStreamer(selectedStreamer);
+    saveRecords();
+    els.quickMessage.className = "form-message success";
+    els.quickMessage.textContent = `已删除“${streamerName}”及其历史记录。`;
   }
 
   function roundMoney(value) {
@@ -366,6 +480,7 @@
     const streamerName = locked ? normalizeStreamer(pendingPrediction.streamerName) : normalizeStreamer(els.quickStreamer.value);
     const profile = streamerStats(streamerName, locked ? pendingPrediction.sessionId : null);
     els.quickStreamer.disabled = locked;
+    els.manageStreamers.disabled = locked;
     if (locked) els.quickStreamer.value = streamerName;
     els.quickProfileStatus.textContent = confidenceLabel(profile.all.total);
     $$('[data-quick-size], [data-quick-parity]').forEach((button) => {
@@ -905,9 +1020,9 @@
     renderHistory();
     renderAdvice();
     renderRecords();
+    renderStreamerProfiles();
     renderQuickRound();
     renderQuickHistory();
-    renderStreamerProfiles();
   }
 
   function escapeHtml(value) {
@@ -1022,17 +1137,34 @@
     if (event.key === "Enter") finishTitleEdit(true);
     if (event.key === "Escape") finishTitleEdit(false);
   });
-  els.quickStreamer.addEventListener("input", () => {
-    if (!pendingPrediction) renderQuickRound();
-  });
   els.quickStreamer.addEventListener("change", () => {
     if (pendingPrediction) return;
     saveSelectedStreamer(els.quickStreamer.value);
     renderAll();
   });
-  els.quickStreamer.addEventListener("keydown", (event) => {
+  els.manageStreamers.addEventListener("click", () => {
+    els.streamerMessage.className = "form-message";
+    els.streamerMessage.textContent = "";
+    els.newStreamerName.value = "";
+    renderStreamerDialog();
+    els.streamerDialog.showModal();
+  });
+  els.addStreamer.addEventListener("click", addStreamerProfile);
+  els.newStreamerName.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229) return;
-    if (event.key === "Enter") els.quickStreamer.blur();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addStreamerProfile();
+    }
+  });
+  els.resetStreamer.addEventListener("click", () => {
+    els.streamerDialog.close();
+    openConfirm("reset-streamer", selectedStreamer);
+  });
+  els.deleteStreamer.addEventListener("click", () => {
+    if (streamerProfiles.length <= 1) return;
+    els.streamerDialog.close();
+    openConfirm("delete-streamer", selectedStreamer);
   });
   $$('[data-quick-size], [data-quick-parity]').forEach((button) => button.addEventListener("click", () => {
     const dimension = button.dataset.quickSize ? "size" : "parity";
@@ -1105,11 +1237,15 @@
   });
   els.addRecord.addEventListener("click", addRecord);
   els.exportData.addEventListener("click", exportCsv);
-  els.clearData.addEventListener("click", () => els.confirmDialog.showModal());
+  els.clearData.addEventListener("click", () => openConfirm("clear-all"));
   els.confirmDialog.addEventListener("close", () => {
     if (els.confirmDialog.returnValue !== "confirm") return;
-    records = [];
-    saveRecords();
+    if (confirmAction.type === "reset-streamer") resetStreamerHistory(confirmAction.streamerName);
+    else if (confirmAction.type === "delete-streamer") deleteStreamerProfile(confirmAction.streamerName);
+    else {
+      records = [];
+      saveRecords();
+    }
     renderAll();
   });
   els.recordsBody.addEventListener("click", (event) => {
