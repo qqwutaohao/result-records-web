@@ -121,7 +121,22 @@ main { display: grid; gap: 14px; padding-bottom: 40px; }
 .leaderboard-row small { display: block; margin-top: 2px; color: var(--muted); font-size: 0.62rem; font-weight: 500; }
 .leaderboard-row > span { color: var(--muted); }
 .leaderboard-row > span:last-child { text-align: right; }
-.model-leaderboard + .advice-list { margin-top: 14px; }
+.model-confidence-details { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.model-confidence-details article { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.model-confidence-details article > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.model-confidence-details span, .model-confidence-details p, .model-confidence-details small { color: var(--muted); font-size: 0.66rem; }
+.model-confidence-details strong { font-size: 0.78rem; }
+.model-confidence-details p { margin: 5px 0 2px; }
+.model-confidence-details small { display: block; line-height: 1.45; }
+.cross-session-stability { margin-top: 10px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: #0c1321; }
+.stability-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+.stability-heading span, .stability-grid span, .stability-grid small { color: var(--muted); font-size: 0.66rem; }
+.stability-heading strong { font-size: 0.74rem; }
+.stability-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stability-grid > div { padding: 8px 9px; border-radius: 8px; background: var(--surface-2); }
+.stability-grid strong, .stability-grid small { display: block; }
+.stability-grid strong { margin-top: 2px; font-size: 0.78rem; }
+.model-confidence-details + .cross-session-stability + .advice-list { margin-top: 14px; }
 .quick-flow { display: grid; grid-template-columns: 1fr 1.12fr 1fr; gap: 12px; }
 .quick-stage, .quick-analysis { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #0c1321; }
 .quick-stage-label { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; color: var(--text); font-weight: 700; }
@@ -413,6 +428,7 @@ dialog p { color: var(--muted); }
   .model-meta { align-items: flex-start; flex-direction: column; gap: 4px; }
   .model-meta strong { text-align: left; }
   .leaderboard-head, .leaderboard-row { grid-template-columns: minmax(98px, 1.25fr) repeat(3, minmax(52px, 0.7fr)); gap: 5px; padding-inline: 9px; }
+  .model-confidence-details { grid-template-columns: 1fr; }
   .advanced-tools > summary { align-items: flex-start; flex-direction: column; gap: 2px; }
   .advanced-tools > summary small { margin-left: 0; }
   fieldset { padding: 15px; }

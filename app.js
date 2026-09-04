@@ -57,6 +57,8 @@
     sampleCount: $("#sample-count"),
     historyStats: $("#history-stats"),
     modelLeaderboard: $("#model-leaderboard"),
+    modelConfidenceDetails: $("#model-confidence-details"),
+    crossSessionStability: $("#cross-session-stability"),
     validationList: $("#validation-list"),
     recordsBody: $("#records-body"),
     recordsEmpty: $("#records-empty"),
@@ -340,18 +342,95 @@
     return candidates[0]?.[metric] < baseline ? candidates[0].key : "baseline";
   }
 
+  function savedModelKeys(record) {
+    const saved = record?.modelPrediction?.modelKeys;
+    if (saved && MODEL_DEFINITIONS.some(({ key }) => key === saved.size) && MODEL_DEFINITIONS.some(({ key }) => key === saved.parity)) {
+      return { size: saved.size, parity: saved.parity };
+    }
+    const legacyKey = record?.modelPrediction?.modelKey;
+    if (MODEL_DEFINITIONS.some(({ key }) => key === legacyKey)) return { size: legacyKey, parity: legacyKey };
+    return { size: "baseline", parity: "baseline" };
+  }
+
+  function lockedBlockState(items, evaluation) {
+    const chronological = items.filter(hasComparablePredictions).reverse();
+    const position = chronological.length % 20;
+    const index = Math.floor(chronological.length / 20);
+    const activeKeys = position === 0
+      ? { size: selectActiveModel(evaluation, "size"), parity: selectActiveModel(evaluation, "parity") }
+      : savedModelKeys(chronological[index * 20]);
+    return { index, position, activeKeys };
+  }
+
+  function bestCandidate(evaluation, metric) {
+    return [evaluation.models.static, evaluation.models.dynamic]
+      .filter((model) => Number.isFinite(model[metric]))
+      .sort((first, second) => first[metric] - second[metric])[0]?.key || "static";
+  }
+
+  function pairedConfidence(items, modelKey, metric) {
+    const differences = [];
+    items.filter(hasComparablePredictions).forEach((record) => {
+      const result = classify(record.officialDice);
+      if (metric === "size" && result.triple) return;
+      const field = metric === "size" ? "big" : "odd";
+      const actual = metric === "size" ? (result.size === "big" ? 1 : 0) : (result.parity === "odd" ? 1 : 0);
+      const probability = Number(record.modelPredictions[modelKey][field]);
+      differences.push(0.25 - (probability - actual) ** 2);
+    });
+    if (!differences.length) return { count: 0, mean: null, lower: null, upper: null };
+    const mean = differences.reduce((total, value) => total + value, 0) / differences.length;
+    if (differences.length < 2) return { count: differences.length, mean, lower: null, upper: null };
+    const variance = differences.reduce((total, value) => total + (value - mean) ** 2, 0) / (differences.length - 1);
+    const margin = 1.96 * Math.sqrt(variance / differences.length);
+    return { count: differences.length, mean, lower: mean - margin, upper: mean + margin };
+  }
+
+  function crossSessionSummary() {
+    const groups = new Map();
+    records.forEach((record) => {
+      if (!record.sessionId || !hasComparablePredictions(record)) return;
+      if (!groups.has(record.sessionId)) groups.set(record.sessionId, []);
+      groups.get(record.sessionId).push(record);
+    });
+    const wins = {
+      size: { baseline: 0, static: 0, dynamic: 0 },
+      parity: { baseline: 0, static: 0, dynamic: 0 },
+    };
+    let qualified = 0;
+    groups.forEach((items) => {
+      const evaluation = evaluateModels(items);
+      if (evaluation.rounds < 20) return;
+      qualified += 1;
+      wins.size[selectActiveModel(evaluation, "size")] += 1;
+      wins.parity[selectActiveModel(evaluation, "parity")] += 1;
+    });
+    const stable = {};
+    ["size", "parity"].forEach((metric) => {
+      const winner = ["static", "dynamic"].sort((first, second) => wins[metric][second] - wins[metric][first])[0];
+      stable[metric] = qualified >= 3 && wins[metric][winner] >= 3 && wins[metric][winner] / qualified >= 0.6 ? winner : null;
+    });
+    return { qualified, wins, stable };
+  }
+
+  function confidenceState(items, evaluation, crossSession, metric) {
+    const candidate = bestCandidate(evaluation, metric);
+    const interval = pairedConfidence(items, candidate, metric);
+    let label = "收集中";
+    if (interval.count >= 20 && interval.lower !== null) {
+      if (interval.upper < 0) label = "未优于基准";
+      else if (interval.lower > 0 && crossSession.stable[metric] === candidate) label = "多场稳定";
+      else if (interval.lower > 0) label = "初步优势";
+      else label = "优势未确认";
+    }
+    return { candidate, interval, label };
+  }
+
   function currentModelState(items) {
     const predictions = shadowPredictions(items);
     const evaluation = evaluateModels(items);
-    const activeKeys = {
-      size: selectActiveModel(evaluation, "size"),
-      parity: selectActiveModel(evaluation, "parity"),
-    };
-    const improvement = Object.fromEntries(["size", "parity"].map((metric) => {
-      const baselineScore = evaluation.models.baseline[metric];
-      const activeScore = evaluation.models[activeKeys[metric]][metric];
-      return [metric, activeKeys[metric] !== "baseline" && baselineScore ? ((baselineScore - activeScore) / baselineScore) * 100 : 0];
-    }));
+    const block = lockedBlockState(items, evaluation);
+    const activeKeys = block.activeKeys;
     const sizePrediction = predictions[activeKeys.size];
     const parityPrediction = predictions[activeKeys.parity];
     const active = {
@@ -360,7 +439,7 @@
       odd: parityPrediction.odd,
       even: parityPrediction.even,
     };
-    return { predictions, evaluation, activeKeys, active, improvement };
+    return { predictions, evaluation, block, activeKeys, active };
   }
 
   function renderModel() {
@@ -372,15 +451,13 @@
 
     const bothBaseline = state.activeKeys.size === "baseline" && state.activeKeys.parity === "baseline";
     const sameModel = state.activeKeys.size === state.activeKeys.parity;
-    els.sessionStatus.textContent = state.evaluation.rounds < 20
-      ? `对比中 ${state.evaluation.rounds}/20`
-      : bothBaseline ? "基准模式" : state.evaluation.rounds < 100 ? "实验领先" : "当前最优";
-    els.modelConfidence.textContent = state.evaluation.rounds < 20
-      ? "固定 50% · 对比收集中"
+    els.sessionStatus.textContent = `第 ${state.block.index + 1} 段 · ${state.block.position}/20`;
+    els.modelConfidence.textContent = state.block.index === 0
+      ? "固定 50% · 首段锁定"
       : sameModel
         ? `${modelName(state.activeKeys.size)} · ${bothBaseline ? "自动降级" : state.evaluation.rounds < 100 ? "实验领先" : "当前最优"}`
         : `大小 ${modelName(state.activeKeys.size)} · 单双 ${modelName(state.activeKeys.parity)}`;
-    els.modelSample.textContent = `本场 ${items.length} 轮 · 对比 ${state.evaluation.rounds} 轮`;
+    els.modelSample.textContent = `本场 ${items.length} 轮 · 本段模型已锁定`;
     els.probBig.textContent = `${size[0].toFixed(1)}%`;
     els.probSmall.textContent = `${size[1].toFixed(1)}%`;
     els.probOdd.textContent = `${parity[0].toFixed(1)}%`;
@@ -388,23 +465,18 @@
     els.barBig.style.width = `${size[0]}%`;
     els.barOdd.style.width = `${parity[0]}%`;
 
-    if (state.evaluation.rounds < 20) {
-      els.modelNote.textContent = `三套模型后台同步预测，还需 ${20 - state.evaluation.rounds} 轮完成首轮对比`;
+    if (state.block.index === 0) {
+      els.modelNote.textContent = `首段固定使用 50% 基准，还需 ${20 - state.block.position} 轮完成`;
     } else if (bothBaseline) {
-      els.modelNote.textContent = "两组影子模型暂未胜出，均自动使用 50% / 50% 基准";
+      els.modelNote.textContent = `第 ${state.block.index + 1} 段已锁定 50% 基准，不会中途切换`;
     } else {
-      els.modelNote.textContent = "大小与单双分别择优；未满 100 轮仍是实验状态";
+      els.modelNote.textContent = `第 ${state.block.index + 1} 段已分别择优并锁定，不会中途切换`;
     }
 
-    if (state.evaluation.rounds < 20) {
-      els.modelValidation.textContent = `三模型对比 ${state.evaluation.rounds}/20`;
-    } else if (!bothBaseline) {
-      const sizeText = state.activeKeys.size === "baseline" ? "大小降级" : `大小改善 ${state.improvement.size.toFixed(1)}%`;
-      const parityText = state.activeKeys.parity === "baseline" ? "单双降级" : `单双改善 ${state.improvement.parity.toFixed(1)}%`;
-      els.modelValidation.textContent = `${sizeText} · ${parityText}`;
-    } else {
-      els.modelValidation.textContent = "暂未优于 50% 基准";
-    }
+    const crossSession = crossSessionSummary();
+    const sizeConfidence = confidenceState(items, state.evaluation, crossSession, "size");
+    const parityConfidence = confidenceState(items, state.evaluation, crossSession, "parity");
+    els.modelValidation.textContent = `大小${sizeConfidence.label} · 单双${parityConfidence.label}`;
   }
 
   function roundMoney(value) {
@@ -597,6 +669,9 @@
   function renderValidation() {
     const items = sessionRecords();
     const state = currentModelState(items);
+    const crossSession = crossSessionSummary();
+    const sizeConfidence = confidenceState(items, state.evaluation, crossSession, "size");
+    const parityConfidence = confidenceState(items, state.evaluation, crossSession, "parity");
     const ranked = [...MODEL_DEFINITIONS]
       .map((definition) => ({ ...definition, ...state.evaluation.models[definition.key] }))
       .sort((first, second) => {
@@ -617,16 +692,34 @@
       </div>`;
       }).join("")}`;
 
-    const tips = ["三套模型使用同一批开奖前预测，以综合 Brier Score 排名；数值越低越好。"];
+    const signedScore = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(4)}`;
+    els.modelConfidenceDetails.innerHTML = [
+      { metric: "大小", confidence: sizeConfidence },
+      { metric: "单双", confidence: parityConfidence },
+    ].map(({ metric, confidence }) => `<article>
+      <div><span>${metric}可信度</span><strong>${confidence.label}</strong></div>
+      <p>${escapeHtml(modelName(confidence.candidate))} 对比固定 50%</p>
+      <small>${confidence.interval.lower === null ? `有效样本 ${confidence.interval.count}/20` : `近似 95% Brier 差值区间 ${signedScore(confidence.interval.lower)} ～ ${signedScore(confidence.interval.upper)}`}</small>
+    </article>`).join("");
+
+    const stabilityText = (metric, label) => {
+      const stableKey = crossSession.stable[metric];
+      if (crossSession.qualified < 3) return `<div><span>${label}</span><strong>继续收集</strong><small>${crossSession.qualified}/3 个合格场次</small></div>`;
+      if (!stableKey) return `<div><span>${label}</span><strong>尚未稳定</strong><small>没有模型重复胜出</small></div>`;
+      return `<div><span>${label}</span><strong>${escapeHtml(modelName(stableKey))}</strong><small>${crossSession.wins[metric][stableKey]}/${crossSession.qualified} 场胜出 · 多场稳定</small></div>`;
+    };
+    els.crossSessionStability.innerHTML = `<div class="stability-heading"><span>跨场稳定性</span><strong>${crossSession.qualified} 个合格场次</strong></div><div class="stability-grid">${stabilityText("size", "大小")}${stabilityText("parity", "单双")}</div>`;
+
+    const tips = ["每个验证段固定 20 轮，段内展示模型不会切换；三套影子模型仍持续同步评分。"];
     const legacyCount = items.length - state.evaluation.rounds;
     if (legacyCount > 0) tips.push(`本场有 ${legacyCount} 条旧版或截图记录用于计算概率，但不参与三模型公平排名。`);
-    if (state.evaluation.rounds < 20) {
-      tips.push(`公平对比 ${state.evaluation.rounds}/20 轮；完成前首页保持固定 50% 基准。`);
+    if (state.block.index === 0) {
+      tips.push(`首段进度 ${state.block.position}/20；固定使用 50% 基准。`);
     } else {
       const bothBaseline = state.activeKeys.size === "baseline" && state.activeKeys.parity === "baseline";
       tips.push(bothBaseline
-        ? "大小与单双的影子模型都没有优于固定 50% 基准，首页已自动降级。"
-        : `大小与单双已分别选择最低 Brier 模型；${state.evaluation.rounds < 100 ? "仍处于实验状态。" : "已达到初步比较样本。"}`);
+        ? `第 ${state.block.index + 1} 段大小与单双均锁定 50% 基准。`
+        : `第 ${state.block.index + 1} 段已分别锁定模型；${state.evaluation.rounds < 100 ? "仍处于实验状态。" : "已达到初步比较样本。"}`);
     }
     els.validationList.innerHTML = tips.map((tip) => `<li>${tip}</li>`).join("");
   }
