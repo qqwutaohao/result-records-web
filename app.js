@@ -1,12 +1,37 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "k3-verifier-records-v1";
-  const BANKROLL_KEY = "k3-verifier-bankroll-v1";
+  if (!globalThis.K3ModelCore) {
+    if (globalThis.__K3_MODEL_BOOTSTRAPPING__) throw new Error("模型核心未加载。");
+    globalThis.__K3_MODEL_BOOTSTRAPPING__ = true;
+    if (document.readyState === "loading") {
+      document.write('<script src="model-core.js?v=4"><\/script><script src="app.js?v=4"><\/script>');
+    } else {
+      const coreScript = document.createElement("script");
+      coreScript.src = "model-core.js?v=4";
+      coreScript.onload = () => {
+        const appScript = document.createElement("script");
+        appScript.src = "app.js?v=4";
+        document.head.append(appScript);
+      };
+      document.head.append(coreScript);
+    }
+    return;
+  }
+  const ModelCore = globalThis.K3ModelCore;
+
+  const LEGACY_STORAGE_KEY = "k3-verifier-records-v1";
+  const LEGACY_BANKROLL_KEY = "k3-verifier-bankroll-v1";
+  const LEGACY_SESSION_KEY = "k3-verifier-model-session-v1";
+  const STORAGE_KEY = "k3-verifier-records-v4";
+  const BANKROLL_KEY = "k3-verifier-bankroll-v4";
   const TITLE_KEY = "k3-verifier-title-v1";
-  const SESSION_KEY = "k3-verifier-model-session-v1";
+  const SESSION_KEY = "k3-verifier-model-session-v4";
+  const INVALIDATED_SESSIONS_KEY = "k3-verifier-invalidated-sessions-v4";
+  const WRITE_LOCK_KEY = "k3-verifier-write-lock-v1";
+  const WRITE_LOCK_NAME = "k3-verifier-data-write";
   const DEFAULT_TITLE = "结果记录台";
-  const MODEL_PROTOCOL_VERSION = 3;
+  const MODEL_PROTOCOL_VERSION = 4;
   const SESSION_GAP_MS = 30 * 60 * 1000;
   const PRIOR_SIDE = 10;
   const DICE_PRIOR_FACE = 4;
@@ -15,14 +40,13 @@
   const DECAY_HALF_LIFE = 20;
   const ENSEMBLE_ETA = 2;
   const VALIDATION_BLOCK_SIZE = 10;
-  const EVIDENCE_MIN_ROUNDS = 20;
   const HISTORY_PRIOR_ROUNDS = 5;
   const HISTORY_QUALIFIED_ROUNDS = 40;
   const HISTORY_MAX_RECORDS = 200;
-  const CONFIDENCE_ALPHA = 0.05;
-  const NULL_TEST_ITERATIONS = 400;
-  const ODDS = 1.96;
-  const BREAK_EVEN_PROBABILITY = 1 / ODDS;
+  const ODDS = ModelCore.DEFAULT_ODDS;
+  const BREAK_EVEN_PROBABILITY = ModelCore.BREAK_EVEN_PROBABILITY;
+  const TRIAL_E_VALUE_THRESHOLD = 40;
+  const STABLE_E_VALUE_THRESHOLD = 200;
   const CUSUM_RECENT_SIZE = 10;
   const CUSUM_REFERENCE_SIZE = 20;
   const CUSUM_ALLOWANCE = 0.5;
@@ -38,6 +62,21 @@
     { key: "ensemble", name: "加权组合" },
   ];
   const BASE_MODEL_KEYS = ["baseline", "static", "dynamic", "diceBias", "pooledBias"];
+  const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const tabChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("k3-verifier-tabs-v4") : null;
+  const pendingTabProbes = new Map();
+
+  if (tabChannel) {
+    tabChannel.addEventListener("message", (event) => {
+      const message = event.data;
+      if (!message || message.from === TAB_ID) return;
+      if (message.type === "probe") {
+        tabChannel.postMessage({ type: "present", requestId: message.requestId, from: TAB_ID });
+      } else if (message.type === "present" && pendingTabProbes.has(message.requestId)) {
+        pendingTabProbes.set(message.requestId, true);
+      }
+    });
+  }
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -102,12 +141,15 @@
     clearOcrResults: $("#clear-ocr-results"),
   };
 
+  let invalidatedSessions = loadInvalidatedSessions();
   let records = loadRecords();
   let bankroll = loadBankroll();
   let session = loadSession();
   let ocrCandidates = [];
   let ocrRawSections = [];
   let ocrLibraryPromise = null;
+  let savingResult = false;
+  let storageSyncTimer = null;
 
   if (bankroll) els.initialBankroll.value = bankroll.initial;
   applyTitle(localStorage.getItem(TITLE_KEY) || DEFAULT_TITLE);
@@ -117,13 +159,72 @@
       && dice.every((value) => Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 6);
   }
 
+  function validLockedModelKeys(keys) {
+    return keys && ["size", "parity"].every((metric) => MODEL_DEFINITIONS.some(({ key }) => key === keys[metric]));
+  }
+
+  function validModelBlock(record) {
+    const block = record?.modelBlock;
+    return record?.modelProtocolVersion === MODEL_PROTOCOL_VERSION
+      && block?.protocolVersion === MODEL_PROTOCOL_VERSION
+      && Number.isInteger(block.round)
+      && Number.isInteger(block.index)
+      && Number.isInteger(block.position)
+      && block.round >= 0
+      && block.index === Math.floor(block.round / VALIDATION_BLOCK_SIZE)
+      && block.position === block.round % VALIDATION_BLOCK_SIZE
+      && typeof block.id === "string"
+      && validLockedModelKeys(block.lockedModelKeys);
+  }
+
+  function derivedNextProtocolRound(sessionId) {
+    const rounds = records.filter((record) => record.sessionId === sessionId && validModelBlock(record))
+      .map((record) => record.modelBlock.round);
+    return rounds.length ? Math.max(...rounds) + 1 : 0;
+  }
+
+  function normalizeSessionProtocol(candidate) {
+    const derivedRound = derivedNextProtocolRound(candidate.id);
+    const savedRound = candidate.modelProtocolVersion === MODEL_PROTOCOL_VERSION
+      && Number.isInteger(candidate.nextProtocolRound)
+      && candidate.nextProtocolRound >= 0
+      ? candidate.nextProtocolRound
+      : 0;
+    const activeBlock = candidate.modelProtocolVersion === MODEL_PROTOCOL_VERSION
+      && candidate.activeProtocolBlock?.protocolVersion === MODEL_PROTOCOL_VERSION
+      && Number.isInteger(candidate.activeProtocolBlock.index)
+      && validLockedModelKeys(candidate.activeProtocolBlock.lockedModelKeys)
+      ? candidate.activeProtocolBlock
+      : null;
+    return {
+      ...candidate,
+      modelProtocolVersion: MODEL_PROTOCOL_VERSION,
+      nextProtocolRound: Math.max(savedRound, derivedRound),
+      activeProtocolBlock: activeBlock,
+    };
+  }
+
   function loadRecords() {
     try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY) ?? "[]";
+      const saved = JSON.parse(raw);
       return Array.isArray(saved) ? saved.filter((record) => validDice(record.officialDice)) : [];
     } catch {
       return [];
     }
+  }
+
+  function loadInvalidatedSessions() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(INVALIDATED_SESSIONS_KEY) || "[]");
+      return new Set(Array.isArray(saved) ? saved.filter((value) => typeof value === "string") : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function saveInvalidatedSessions() {
+    localStorage.setItem(INVALIDATED_SESSIONS_KEY, JSON.stringify([...invalidatedSessions]));
   }
 
   function saveRecords() {
@@ -132,7 +233,8 @@
 
   function loadBankroll() {
     try {
-      const saved = JSON.parse(localStorage.getItem(BANKROLL_KEY) || "null");
+      const raw = localStorage.getItem(BANKROLL_KEY) ?? localStorage.getItem(LEGACY_BANKROLL_KEY) ?? "null";
+      const saved = JSON.parse(raw);
       return saved && Number.isFinite(saved.initial) && saved.initial >= 2 ? saved : null;
     } catch {
       return null;
@@ -141,6 +243,70 @@
 
   function saveBankrollState() {
     localStorage.setItem(BANKROLL_KEY, JSON.stringify(bankroll));
+  }
+
+  function delay(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  async function anotherTabIsOpen() {
+    if (!tabChannel) return null;
+    const requestId = `${TAB_ID}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    pendingTabProbes.set(requestId, false);
+    tabChannel.postMessage({ type: "probe", requestId, from: TAB_ID });
+    await delay(250);
+    const found = pendingTabProbes.get(requestId) === true;
+    pendingTabProbes.delete(requestId);
+    return found;
+  }
+
+  async function withStorageWriteLock(action) {
+    if (navigator.locks?.request) return navigator.locks.request(WRITE_LOCK_NAME, { mode: "exclusive" }, action);
+    const anotherTab = await anotherTabIsOpen();
+    if (anotherTab === null) throw new Error("当前浏览器版本不支持安全保存，请升级浏览器后重试。");
+    if (anotherTab) throw new Error("当前浏览器不支持安全多标签写入，请关闭其他记录台页面后重试。");
+    const token = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      let current = null;
+      try {
+        current = JSON.parse(localStorage.getItem(WRITE_LOCK_KEY) || "null");
+      } catch {
+        // Replace malformed lock data below.
+      }
+      if (!current?.token || Number(current.expiresAt) <= Date.now()) {
+        localStorage.setItem(WRITE_LOCK_KEY, JSON.stringify({ token, expiresAt: Date.now() + 5000 }));
+        await delay(30);
+        let confirmed = null;
+        try {
+          confirmed = JSON.parse(localStorage.getItem(WRITE_LOCK_KEY) || "null");
+        } catch {
+          // Retry below.
+        }
+        if (confirmed?.token === token) {
+          try {
+            return await action();
+          } finally {
+            let latest = null;
+            try {
+              latest = JSON.parse(localStorage.getItem(WRITE_LOCK_KEY) || "null");
+            } catch {
+              // Leave unrelated malformed data untouched.
+            }
+            if (latest?.token === token) localStorage.removeItem(WRITE_LOCK_KEY);
+          }
+        }
+      }
+      await delay(25 + Math.floor(Math.random() * 25));
+    }
+    throw new Error("其他页面正在写入数据，请稍后重试。");
+  }
+
+  function syncStoredState() {
+    invalidatedSessions = loadInvalidatedSessions();
+    records = loadRecords();
+    bankroll = loadBankroll();
+    session = loadSession();
+    ensureSession();
   }
 
   function sameLocalDay(first, second) {
@@ -156,31 +322,44 @@
       && now.getTime() - last.getTime() <= SESSION_GAP_MS;
   }
 
-  function newSession() {
+  function createSessionState() {
     const now = new Date().toISOString();
-    const created = { id: `model-session-${Date.now()}-${Math.random().toString(16).slice(2)}`, startedAt: now, lastActiveAt: now };
+    return {
+      id: `model-session-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      startedAt: now,
+      lastActiveAt: now,
+      modelProtocolVersion: MODEL_PROTOCOL_VERSION,
+      nextProtocolRound: 0,
+      activeProtocolBlock: null,
+    };
+  }
+
+  function newSession() {
+    const created = createSessionState();
     localStorage.setItem(SESSION_KEY, JSON.stringify(created));
     return created;
   }
 
   function loadSession() {
     try {
-      const saved = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
-      if (saved?.id && sessionIsActive(saved.lastActiveAt)) return saved;
+      const raw = localStorage.getItem(SESSION_KEY) ?? localStorage.getItem(LEGACY_SESSION_KEY) ?? "null";
+      const saved = JSON.parse(raw);
+      if (saved?.id && sessionIsActive(saved.lastActiveAt)) {
+        return normalizeSessionProtocol(saved);
+      }
     } catch {
       // Start a clean session below.
     }
     const latest = records[0];
     if (latest?.sessionId && sessionIsActive(latest.createdAt)) {
-      const adopted = { id: latest.sessionId, startedAt: latest.createdAt, lastActiveAt: latest.createdAt };
-      localStorage.setItem(SESSION_KEY, JSON.stringify(adopted));
-      return adopted;
+      return normalizeSessionProtocol({ id: latest.sessionId, startedAt: latest.createdAt, lastActiveAt: latest.createdAt });
     }
-    return newSession();
+    return createSessionState();
   }
 
   function ensureSession() {
-    if (!sessionIsActive(session.lastActiveAt)) session = newSession();
+    if (!sessionIsActive(session.lastActiveAt) || invalidatedSessions.has(session.id)) session = createSessionState();
+    else if (session.modelProtocolVersion !== MODEL_PROTOCOL_VERSION) session = normalizeSessionProtocol(session);
     return session;
   }
 
@@ -441,14 +620,11 @@
   }
 
   function ensembleWeights(items, metric) {
-    const field = metric === "size" ? "big" : "odd";
     const losses = Object.fromEntries(BASE_MODEL_KEYS.map((key) => [key, 0]));
     items.filter((record) => BASE_MODEL_KEYS.every((key) => predictionAvailable(record, key))).forEach((record) => {
       const result = classify(record.officialDice);
-      if (metric === "size" && result.triple) return;
-      const actual = metric === "size" ? (result.size === "big" ? 1 : 0) : (result.parity === "odd" ? 1 : 0);
       BASE_MODEL_KEYS.forEach((key) => {
-        losses[key] += (Number(record.modelPredictions[key][field]) - actual) ** 2;
+        losses[key] += ModelCore.metricBrierLoss(record.modelPredictions[key], result, metric);
       });
     });
     const bestLoss = Math.min(...Object.values(losses));
@@ -495,7 +671,9 @@
   }
 
   function hasComparablePredictions(record) {
-    return record.modelProtocolVersion === MODEL_PROTOCOL_VERSION
+    return record.evidenceInvalidated !== true
+      && !invalidatedSessions.has(record.sessionId)
+      && validModelBlock(record)
       && MODEL_DEFINITIONS.every(({ key }) => predictionAvailable(record, key));
   }
 
@@ -512,22 +690,20 @@
       comparable.forEach((record) => {
         const prediction = record.modelPredictions[key];
         const result = classify(record.officialDice);
-        if (Math.abs(Number(prediction.big) - 0.5) > 1e-9) {
+        const sizeDirection = ModelCore.directionObservation(prediction, result, "size");
+        if (sizeDirection.decided) {
           decisions += 1;
-          if (!result.triple && (prediction.big > 0.5) === (result.size === "big")) hits += 1;
+          if (sizeDirection.won) hits += 1;
         }
-        if (!result.triple) {
-          const actualBig = result.size === "big" ? 1 : 0;
-          sizeError += (Number(prediction.big) - actualBig) ** 2;
-          sizeCount += 1;
+        sizeError += ModelCore.metricBrierLoss(prediction, result, "size");
+        sizeCount += 1;
+        const parityDirection = ModelCore.directionObservation(prediction, result, "parity");
+        if (parityDirection.decided) {
+          decisions += 1;
+          if (parityDirection.won) hits += 1;
         }
-        const actualOdd = result.parity === "odd" ? 1 : 0;
-        parityError += (Number(prediction.odd) - actualOdd) ** 2;
+        parityError += ModelCore.metricBrierLoss(prediction, result, "parity");
         parityCount += 1;
-        if (Math.abs(Number(prediction.odd) - 0.5) > 1e-9) {
-          decisions += 1;
-          if ((prediction.odd > 0.5) === Boolean(actualOdd)) hits += 1;
-        }
       });
       const observations = sizeCount + parityCount;
       models[key] = {
@@ -542,10 +718,11 @@
     return { rounds: comparable.length, models };
   }
 
-  function selectActiveModel(evaluation, metric) {
+  function selectActiveModel(evaluation, metric, excludedKey = null) {
     if (evaluation.rounds < VALIDATION_BLOCK_SIZE) return "baseline";
     const baseline = evaluation.models.baseline[metric];
     const candidates = MODEL_DEFINITIONS.filter(({ key }) => key !== "baseline").map(({ key }) => evaluation.models[key])
+      .filter((model) => model.key !== excludedKey)
       .filter((model) => Number.isFinite(model[metric]))
       .sort((first, second) => first[metric] - second[metric]);
     return candidates[0]?.[metric] < baseline ? candidates[0].key : "baseline";
@@ -562,78 +739,129 @@
   }
 
   function blockImprovement(blockItems, modelKey, metric) {
-    const field = metric === "size" ? "big" : "odd";
     const differences = [];
     blockItems.forEach((record) => {
       if (!hasComparablePredictions(record)) return;
       const result = classify(record.officialDice);
-      if (metric === "size" && result.triple) return;
-      const actual = metric === "size" ? (result.size === "big" ? 1 : 0) : (result.parity === "odd" ? 1 : 0);
-      const modelError = (Number(record.modelPredictions[modelKey][field]) - actual) ** 2;
-      differences.push(0.25 - modelError);
+      differences.push(ModelCore.brierImprovement(
+        record.modelPredictions.baseline,
+        record.modelPredictions[modelKey],
+        result,
+        metric,
+      ));
     });
     return differences.length ? differences.reduce((sum, value) => sum + value, 0) / differences.length : null;
   }
 
-  function validationStreak(chronological, blockIndex, modelKey, metric) {
+  function blockRecords(items, blockIndex) {
+    return items.filter(hasComparablePredictions)
+      .filter((record) => record.modelBlock.index === blockIndex)
+      .sort((first, second) => first.modelBlock.position - second.modelBlock.position);
+  }
+
+  function completeBlockRecords(items, blockIndex) {
+    const blockItems = blockRecords(items, blockIndex);
+    if (blockItems.length !== VALIDATION_BLOCK_SIZE) return [];
+    const blockIds = new Set(blockItems.map((record) => record.modelBlock.id));
+    const positions = blockItems.map((record) => record.modelBlock.position);
+    const expected = Array.from({ length: VALIDATION_BLOCK_SIZE }, (_, index) => index);
+    if (blockIds.size !== 1 || positions.some((position, index) => position !== expected[index])) return [];
+    return blockItems;
+  }
+
+  function blockModelKey(blockItems, metric) {
+    if (!blockItems.length) return null;
+    const modelKey = blockItems[0].modelBlock.lockedModelKeys[metric];
+    return blockItems.every((record) => record.modelBlock.lockedModelKeys[metric] === modelKey) ? modelKey : null;
+  }
+
+  function validationStreak(items, blockIndex, modelKey, metric) {
     if (modelKey === "baseline") return 0;
     let streak = 0;
     for (let index = blockIndex - 1; index >= 1; index -= 1) {
-      const blockItems = chronological.slice(index * VALIDATION_BLOCK_SIZE, (index + 1) * VALIDATION_BLOCK_SIZE);
-      if (blockItems.length < VALIDATION_BLOCK_SIZE || savedModelKeys(blockItems[0])[metric] !== modelKey) break;
+      const blockItems = completeBlockRecords(items, index);
+      if (!blockItems.length || blockModelKey(blockItems, metric) !== modelKey) break;
       if (!(blockImprovement(blockItems, modelKey, metric) > 0)) break;
       streak += 1;
     }
     return streak;
   }
 
-  function nextBlockModel(chronological, evaluation, blockIndex, metric) {
+  function nextBlockModel(items, evaluation, blockIndex, metric) {
     if (blockIndex === 0) return "baseline";
     if (blockIndex > 1) {
-      const previousBlock = chronological.slice((blockIndex - 1) * VALIDATION_BLOCK_SIZE, blockIndex * VALIDATION_BLOCK_SIZE);
-      const previousKey = savedModelKeys(previousBlock[0])[metric];
-      if (previousKey !== "baseline" && blockImprovement(previousBlock, previousKey, metric) > 0) return previousKey;
+      const previousBlock = completeBlockRecords(items, blockIndex - 1);
+      const previousKey = blockModelKey(previousBlock, metric);
+      if (previousKey && previousKey !== "baseline" && blockImprovement(previousBlock, previousKey, metric) > 0) return previousKey;
+      if (previousKey && previousKey !== "baseline") return selectActiveModel(evaluation, metric, previousKey);
     }
     return selectActiveModel(evaluation, metric);
   }
 
-  function lockedBlockState(items, evaluation) {
-    const chronological = items.filter(hasComparablePredictions).reverse();
-    const position = chronological.length % VALIDATION_BLOCK_SIZE;
-    const index = Math.floor(chronological.length / VALIDATION_BLOCK_SIZE);
-    const activeKeys = position === 0 ? {
-      size: nextBlockModel(chronological, evaluation, index, "size"),
-      parity: nextBlockModel(chronological, evaluation, index, "parity"),
-    } : savedModelKeys(chronological[index * VALIDATION_BLOCK_SIZE]);
-    const validationStreaks = {
-      size: validationStreak(chronological, index, activeKeys.size, "size"),
-      parity: validationStreak(chronological, index, activeKeys.parity, "parity"),
+  function resolveActiveBlock(items, evaluation, blockIndex) {
+    const savedBlock = session.activeProtocolBlock;
+    if (savedBlock?.protocolVersion === MODEL_PROTOCOL_VERSION
+      && savedBlock.index === blockIndex
+      && validLockedModelKeys(savedBlock.lockedModelKeys)) return savedBlock;
+
+    const currentRecords = blockRecords(items, blockIndex);
+    const currentKeys = currentRecords.length ? currentRecords[0].modelBlock.lockedModelKeys : null;
+    const consistentKeys = currentKeys && currentRecords.every((record) => (
+      record.modelBlock.lockedModelKeys.size === currentKeys.size
+      && record.modelBlock.lockedModelKeys.parity === currentKeys.parity
+    )) ? currentKeys : null;
+    const lockedModelKeys = consistentKeys || {
+      size: nextBlockModel(items, evaluation, blockIndex, "size"),
+      parity: nextBlockModel(items, evaluation, blockIndex, "parity"),
     };
-    return { index, position, activeKeys, validationStreaks };
+    const activeBlock = {
+      protocolVersion: MODEL_PROTOCOL_VERSION,
+      id: `${session.id}-v${MODEL_PROTOCOL_VERSION}-block-${blockIndex}`,
+      index: blockIndex,
+      lockedModelKeys: { ...lockedModelKeys },
+    };
+    return activeBlock;
   }
 
-  function bestCandidate(evaluation, metric) {
-    return MODEL_DEFINITIONS.filter(({ key }) => key !== "baseline").map(({ key }) => evaluation.models[key])
-      .filter((model) => Number.isFinite(model[metric]))
-      .sort((first, second) => first[metric] - second[metric])[0]?.key || "static";
+  function lockedBlockState(items, evaluation) {
+    const round = session.nextProtocolRound;
+    const position = round % VALIDATION_BLOCK_SIZE;
+    const index = Math.floor(round / VALIDATION_BLOCK_SIZE);
+    const activeBlock = resolveActiveBlock(items, evaluation, index);
+    const activeKeys = activeBlock.lockedModelKeys;
+    const validationStreaks = {
+      size: validationStreak(items, index, activeKeys.size, "size"),
+      parity: validationStreak(items, index, activeKeys.parity, "parity"),
+    };
+    return { id: activeBlock.id, round, index, position, activeKeys, validationStreaks };
   }
 
-  function pairedConfidence(items, modelKey, metric) {
-    const differences = [];
-    items.filter(hasComparablePredictions).forEach((record) => {
-      const result = classify(record.officialDice);
-      if (metric === "size" && result.triple) return;
-      const field = metric === "size" ? "big" : "odd";
-      const actual = metric === "size" ? (result.size === "big" ? 1 : 0) : (result.parity === "odd" ? 1 : 0);
-      const probability = Number(record.modelPredictions[modelKey][field]);
-      differences.push(0.25 - (probability - actual) ** 2);
+  function lockedValidationPoints(items, metric) {
+    const blockIndexes = [...new Set(items.filter(hasComparablePredictions).map((record) => record.modelBlock.index))]
+      .filter((index) => index >= 1)
+      .sort((first, second) => first - second);
+    const points = [];
+    blockIndexes.forEach((blockIndex) => {
+      const completed = completeBlockRecords(items, blockIndex);
+      const modelKey = blockModelKey(completed, metric);
+      if (!completed.length || !modelKey || modelKey === "baseline") return;
+      completed.forEach((record) => {
+        const result = classify(record.officialDice);
+        const prediction = record.modelPredictions[modelKey];
+        points.push({
+          modelKey,
+          improvement: ModelCore.brierImprovement(record.modelPredictions.baseline, prediction, result, metric),
+          direction: ModelCore.directionObservation(prediction, result, metric),
+        });
+      });
     });
-    if (!differences.length) return { count: 0, mean: null, lower: null, upper: null };
-    const mean = differences.reduce((total, value) => total + value, 0) / differences.length;
-    const candidateCount = MODEL_DEFINITIONS.length - 1;
-    const alphaAtCount = (CONFIDENCE_ALPHA / candidateCount) / (differences.length * (differences.length + 1));
-    const margin = Math.sqrt(Math.log(2 / alphaAtCount) / (2 * differences.length));
-    return { count: differences.length, mean, lower: mean - margin, upper: mean + margin };
+    return points;
+  }
+
+  function brierEvidence(items, metric) {
+    const values = lockedValidationPoints(items, metric).map((point) => point.improvement);
+    const evidence = ModelCore.boundedMeanEValue(values);
+    return { count: values.length, mean: evidence.mean, eValue: evidence.value };
   }
 
   function crossSessionSummary() {
@@ -664,89 +892,33 @@
     return { qualified, wins, stable };
   }
 
-  function confidenceState(items, evaluation, crossSession, metric) {
-    const candidate = bestCandidate(evaluation, metric);
-    const interval = pairedConfidence(items, candidate, metric);
+  function confidenceState(items, metric) {
+    const evidence = brierEvidence(items, metric);
     let label = "收集中";
-    if (interval.count >= EVIDENCE_MIN_ROUNDS && interval.lower !== null) {
-      if (interval.upper < 0) label = "未优于基准";
-      else if (interval.lower > 0 && crossSession.stable[metric] === candidate) label = "多场稳定";
-      else if (interval.lower > 0) label = "初步优势";
+    if (evidence.count >= VALIDATION_BLOCK_SIZE) {
+      if (!(evidence.mean > 0)) label = "未优于基准";
+      else if (evidence.eValue >= TRIAL_E_VALUE_THRESHOLD) label = "序贯优势";
       else label = "优势未确认";
     }
-    return { candidate, interval, label };
+    return { evidence, label };
   }
 
-  function proportionConfidenceSequence(hits, count) {
-    if (!count) return { lower: null, upper: null };
-    const rate = hits / count;
-    const alphaAtCount = (CONFIDENCE_ALPHA / 2) / (count * (count + 1));
-    const margin = Math.sqrt(Math.log(1 / alphaAtCount) / (2 * count));
-    return { lower: Math.max(0, rate - margin), upper: Math.min(1, rate + margin) };
-  }
-
-  function directionConfidence(items, modelKey, metric) {
-    let hits = 0;
-    let count = 0;
-    items.filter(hasComparablePredictions).forEach((record) => {
-      const prediction = record.modelPredictions[modelKey];
-      const result = classify(record.officialDice);
-      const firstProbability = metric === "size" ? prediction.big * (1 - prediction.triple) : prediction.odd;
-      const secondProbability = metric === "size" ? prediction.small * (1 - prediction.triple) : prediction.even;
-      if (Math.abs(firstProbability - secondProbability) < 1e-9) return;
-      count += 1;
-      const pickedFirst = firstProbability > secondProbability;
-      const won = metric === "size"
-        ? !result.triple && pickedFirst === (result.size === "big")
-        : pickedFirst === (result.parity === "odd");
-      if (won) hits += 1;
-    });
-    return { hits, count, ...proportionConfidenceSequence(hits, count) };
-  }
-
-  function seededRandom(seed) {
-    let state = seed >>> 0;
-    return () => {
-      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-      return state / 4294967296;
-    };
-  }
-
-  function fairNullTest(items, modelKey, metric) {
-    const chronological = items.filter(hasComparablePredictions).reverse();
-    const completedCount = Math.floor(chronological.length / VALIDATION_BLOCK_SIZE) * VALIDATION_BLOCK_SIZE;
-    const completed = chronological.slice(0, completedCount).slice(-HISTORY_MAX_RECORDS);
-    let observedHits = 0;
-    let decisions = 0;
-    completed.forEach((record) => {
-      const prediction = record.modelPredictions[modelKey];
-      const firstProbability = metric === "size" ? prediction.big * (1 - prediction.triple) : prediction.odd;
-      const secondProbability = metric === "size" ? prediction.small * (1 - prediction.triple) : prediction.even;
-      if (Math.abs(firstProbability - secondProbability) < 1e-9) return;
-      decisions += 1;
-      const result = classify(record.officialDice);
-      const pickedFirst = firstProbability > secondProbability;
-      const won = metric === "size"
-        ? !result.triple && pickedFirst === (result.size === "big")
-        : pickedFirst === (result.parity === "odd");
-      if (won) observedHits += 1;
-    });
-    if (!decisions) return { decisions: 0, observedHits: 0, pValue: null };
-    const keySeed = [...`${modelKey}-${metric}-${decisions}`].reduce((total, char) => Math.imul(total ^ char.charCodeAt(0), 16777619), 2166136261);
-    const random = seededRandom(keySeed);
-    const nullWinProbability = metric === "size" ? 35 / 72 : 0.5;
-    let atLeastObserved = 0;
-    for (let iteration = 0; iteration < NULL_TEST_ITERATIONS; iteration += 1) {
-      let simulatedHits = 0;
-      for (let decision = 0; decision < decisions; decision += 1) {
-        if (random() < nullWinProbability) simulatedHits += 1;
-      }
-      if (simulatedHits >= observedHits) atLeastObserved += 1;
-    }
+  function directionEvidence(items, metric) {
+    const observations = lockedValidationPoints(items, metric)
+      .map((point) => point.direction)
+      .filter((direction) => direction.decided);
+    const hits = observations.filter((direction) => direction.won).length;
+    const profitEvidence = ModelCore.oneSidedBernoulliEValue(hits, observations.length, BREAK_EVEN_PROBABILITY);
+    const fairProbability = metric === "size"
+      ? ModelCore.FAIR_SIZE_WIN_PROBABILITY
+      : ModelCore.FAIR_PARITY_WIN_PROBABILITY;
+    const fairEvidence = ModelCore.oneSidedBernoulliEValue(hits, observations.length, fairProbability);
     return {
-      decisions,
-      observedHits,
-      pValue: (atLeastObserved + 1) / (NULL_TEST_ITERATIONS + 1),
+      hits,
+      count: observations.length,
+      rate: observations.length ? hits / observations.length : null,
+      profitEValue: profitEvidence.value,
+      fairEValue: fairEvidence.value,
     };
   }
 
@@ -785,42 +957,47 @@
     const firstLabel = metric === "size" ? "大" : "单";
     const secondLabel = metric === "size" ? "小" : "双";
     const modelKey = state.activeKeys[metric];
-    const firstProbability = metric === "size" ? state.active.big * (1 - state.active.triple) : state.active.odd;
-    const secondProbability = metric === "size" ? state.active.small * (1 - state.active.triple) : state.active.even;
+    const sizeProbabilities = ModelCore.sizeClassProbabilities(state.active);
+    const firstProbability = metric === "size" ? sizeProbabilities.big : state.active.odd;
+    const secondProbability = metric === "size" ? sizeProbabilities.small : state.active.even;
     const actualWinProbability = Math.max(firstProbability, secondProbability);
-    const interval = pairedConfidence(items, modelKey, metric);
-    const directionEvidence = directionConfidence(items, modelKey, metric);
-    const nullTest = fairNullTest(items, modelKey, metric);
+    const calibrationEvidence = brierEvidence(items, metric);
+    const winEvidence = directionEvidence(items, metric);
     const direction = firstProbability >= secondProbability ? firstLabel : secondLabel;
     const streak = state.block.validationStreaks[metric];
     const changing = state.changes[metric].active;
     const issued = !changing
       && modelKey !== "baseline"
       && streak >= 1
-      && interval.count >= EVIDENCE_MIN_ROUNDS
-      && interval.mean > 0
+      && calibrationEvidence.count >= VALIDATION_BLOCK_SIZE
+      && calibrationEvidence.mean > 0
       && actualWinProbability > BREAK_EVEN_PROBABILITY
-      && directionEvidence.count >= EVIDENCE_MIN_ROUNDS
-      && directionEvidence.lower > BREAK_EVEN_PROBABILITY
-      && nullTest.pValue !== null
-      && nullTest.pValue <= CONFIDENCE_ALPHA;
+      && winEvidence.count >= VALIDATION_BLOCK_SIZE
+      && winEvidence.profitEValue >= TRIAL_E_VALUE_THRESHOLD;
+    const stable = issued
+      && streak >= 2
+      && winEvidence.profitEValue >= STABLE_E_VALUE_THRESHOLD
+      && calibrationEvidence.eValue >= TRIAL_E_VALUE_THRESHOLD;
     let label = "观望";
     if (changing) label = "变化中 · 观望";
     else if (modelKey !== "baseline" && streak < 1) label = "验证中 · 观望";
-    else if (issued) label = `${direction} · ${streak >= 2 ? "稳定信号" : "试验信号"}`;
+    else if (issued) label = `${direction} · ${stable ? "稳定信号" : "试验信号"}`;
     return {
       issued,
+      stable,
       direction: issued ? direction : null,
       label,
       modelKey,
       probability: actualWinProbability,
       breakEven: BREAK_EVEN_PROBABILITY,
       validationStreak: streak,
-      confidenceLower: interval.lower,
-      confidenceUpper: interval.upper,
-      winRateLower: directionEvidence.lower,
-      winRateUpper: directionEvidence.upper,
-      nullPValue: nullTest.pValue,
+      brierMean: calibrationEvidence.mean,
+      brierEValue: calibrationEvidence.eValue,
+      evidenceCount: winEvidence.count,
+      evidenceHits: winEvidence.hits,
+      evidenceRate: winEvidence.rate,
+      profitEValue: winEvidence.profitEValue,
+      fairEValue: winEvidence.fairEValue,
     };
   }
 
@@ -828,7 +1005,7 @@
     let eligible = 0;
     let decisions = 0;
     let hits = 0;
-    items.forEach((record) => {
+    items.filter(hasComparablePredictions).forEach((record) => {
       const saved = record.modelPrediction?.signals?.[metric];
       if (!saved || typeof saved.issued !== "boolean") return;
       const result = classify(record.officialDice);
@@ -908,9 +1085,8 @@
     els.signalSize.className = state.signals.size.issued ? "signal-badge active" : "signal-badge";
     els.signalParity.className = state.signals.parity.issued ? "signal-badge active" : "signal-badge";
 
-    const crossSession = state.crossSession;
-    const sizeConfidence = confidenceState(items, state.evaluation, crossSession, "size");
-    const parityConfidence = confidenceState(items, state.evaluation, crossSession, "parity");
+    const sizeConfidence = confidenceState(items, "size");
+    const parityConfidence = confidenceState(items, "parity");
     els.modelValidation.textContent = `大小${sizeConfidence.label} · 单双${parityConfidence.label}`;
     const issued = [["大小", state.signals.size], ["单双", state.signals.parity]].filter(([, signal]) => signal.issued);
     const changing = [["大小", state.changes.size], ["单双", state.changes.parity]].filter(([, change]) => change.active).map(([metric]) => metric);
@@ -975,7 +1151,7 @@
     return { bet: { dimension, selection, outcome, stake, odds: ODDS, won, payout, net } };
   }
 
-  function saveQuickResult() {
+  function saveQuickResultLocked() {
     els.quickMessage.className = "form-message";
     const dice = parseQuickDice(els.quickResult.value);
     if (!dice) {
@@ -983,25 +1159,46 @@
       return;
     }
     ensureSession();
+    const before = sessionRecords();
+    const issue = els.quickIssue.value.trim();
+    if (issue && before.some((record) => record.issue?.trim() === issue)) {
+      els.quickMessage.textContent = "本场已经存在相同期号或备注，请核对后再保存。";
+      return;
+    }
     const result = classify(dice);
     const betResult = betForResult(result);
     if (betResult.error) {
       els.quickMessage.textContent = betResult.error;
       return;
     }
-    const before = sessionRecords();
     const state = currentModelState(before);
     const frozenPredictions = Object.fromEntries(Object.entries(state.predictions).map(([key, prediction]) => [key, {
       ...prediction,
       basedOn: before.length,
     }]));
+    const modelBlock = {
+      protocolVersion: MODEL_PROTOCOL_VERSION,
+      id: state.block.id,
+      round: state.block.round,
+      index: state.block.index,
+      position: state.block.position,
+      role: state.block.index === 0 ? "selection" : "validation",
+      lockedModelKeys: { ...state.activeKeys },
+    };
+    session.activeProtocolBlock = {
+      protocolVersion: MODEL_PROTOCOL_VERSION,
+      id: state.block.id,
+      index: state.block.index,
+      lockedModelKeys: { ...state.activeKeys },
+    };
     records.unshift({
       id: `result-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      issue: els.quickIssue.value.trim(),
+      issue,
       officialDice: dice,
       source: "quick",
       sessionId: session.id,
       modelProtocolVersion: MODEL_PROTOCOL_VERSION,
+      modelBlock,
       modelPredictions: frozenPredictions,
       modelPrediction: {
         big: frozenPredictions[state.activeKeys.size].big,
@@ -1018,8 +1215,14 @@
       validation: { code: "unverified", label: "仅记录", exact: false, category: false, sum: false },
       createdAt: new Date().toISOString(),
     });
-    touchSession();
     saveRecords();
+    session.nextProtocolRound = state.block.round + 1;
+    if (session.nextProtocolRound % VALIDATION_BLOCK_SIZE === 0) session.activeProtocolBlock = null;
+    try {
+      touchSession();
+    } catch {
+      // The immutable record carries enough metadata to recover the cursor on reload.
+    }
     els.quickResult.value = "";
     els.quickIssue.value = "";
     els.quickBetSelection.value = "none";
@@ -1035,10 +1238,28 @@
     els.quickResult.focus();
   }
 
+  async function saveQuickResult() {
+    if (savingResult) return;
+    savingResult = true;
+    els.saveResult.disabled = true;
+    try {
+      await withStorageWriteLock(() => {
+        syncStoredState();
+        saveQuickResultLocked();
+      });
+    } catch (error) {
+      els.quickMessage.className = "form-message";
+      els.quickMessage.textContent = error?.message || "数据写入失败，请重试。";
+    } finally {
+      savingResult = false;
+      renderQuickInput();
+    }
+  }
+
   function renderQuickInput() {
     const dice = parseQuickDice(els.quickResult.value);
     els.quickResultPreview.textContent = dice ? `${diceSymbols(dice)}  ${resultLabel(classify(dice))}` : "输入三个 1–6 的数字";
-    els.saveResult.disabled = !dice;
+    els.saveResult.disabled = savingResult || !dice;
   }
 
   function renderBankroll() {
@@ -1113,8 +1334,8 @@
     const items = sessionRecords();
     const state = currentModelState(items);
     const crossSession = state.crossSession;
-    const sizeConfidence = confidenceState(items, state.evaluation, crossSession, "size");
-    const parityConfidence = confidenceState(items, state.evaluation, crossSession, "parity");
+    const sizeConfidence = confidenceState(items, "size");
+    const parityConfidence = confidenceState(items, "parity");
     const sizeSignals = signalMetrics(items, "size");
     const paritySignals = signalMetrics(items, "parity");
     const ranked = [...MODEL_DEFINITIONS]
@@ -1137,7 +1358,12 @@
       </div>`;
       }).join("")}`;
 
-    const signedScore = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(4)}`;
+    const signedScore = (value) => Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(4)}` : "—";
+    const evidenceScore = (value) => {
+      if (!Number.isFinite(value)) return "—";
+      if (value >= 1e6) return `×${value.toExponential(1)}`;
+      return `×${value.toFixed(value < 10 ? 2 : 1)}`;
+    };
     els.modelConfidenceDetails.innerHTML = [
       { metric: "大小", confidence: sizeConfidence },
       { metric: "单双", confidence: parityConfidence },
@@ -1148,10 +1374,10 @@
       const hitRate = metrics.hitRate === null ? "—" : `${(metrics.hitRate * 100).toFixed(1)}%`;
       return `<article>
       <div><span>${metric}可信度</span><strong>${confidence.label}</strong></div>
-      <p>${escapeHtml(modelName(confidence.candidate))} 对比固定 50%</p>
-      <small>${confidence.interval.lower === null ? `有效样本 ${confidence.interval.count}/${EVIDENCE_MIN_ROUNDS}` : `连续有效 Brier 区间 ${signedScore(confidence.interval.lower)} ～ ${signedScore(confidence.interval.upper)}`}</small>
+      <p>完整锁定验证策略 对比理论基准</p>
+      <small>验证样本 ${confidence.evidence.count} · Brier 平均优势 ${signedScore(confidence.evidence.mean)} · 序贯证据 ${evidenceScore(confidence.evidence.eValue)}</small>
       <small>最高实际胜率 ${(signal.probability * 100).toFixed(1)}% · 盈亏线 ${(BREAK_EVEN_PROBABILITY * 100).toFixed(1)}% · 独立验证 ${Math.min(signal.validationStreak, 2)}/2</small>
-      <small>胜率连续下界 ${signal.winRateLower === null ? "—" : `${(signal.winRateLower * 100).toFixed(1)}%`} · 公平空白对照 ${signal.nullPValue === null ? "—" : `p=${signal.nullPValue.toFixed(3)}`}</small>
+      <small>方向命中 ${signal.evidenceCount ? `${signal.evidenceHits}/${signal.evidenceCount}` : "—"} · 盈亏线证据 ${evidenceScore(signal.profitEValue)} · 公平线证据 ${evidenceScore(signal.fairEValue)}</small>
       <small>信号覆盖 ${coverage} · 输出 ${metrics.decisions}/${metrics.eligible} · 命中 ${hitRate}</small>
     </article>`;
     }).join("");
@@ -1164,7 +1390,10 @@
     };
     els.crossSessionStability.innerHTML = `<div class="stability-heading"><span>跨场稳定性</span><strong>${crossSession.qualified} 个合格场次</strong></div><div class="stability-grid">${stabilityText("size", "大小")}${stabilityText("parity", "单双")}</div>`;
 
-    const tips = ["每个验证段固定 10 轮；一次只验证当前挑战者，连续两段胜出才标记稳定。", "信号采用可反复查看的连续置信下界，并与公平随机空白对照比较。", "合格旧场次最多只折算为 5 轮先验；当场最近 10 轮明显不一致时自动停用。"];
+    const tips = ["首段 10 轮只选模；证据仅统计开奖前已锁定且完整结束的验证段。", "试验信号要求盈亏线证据达到 ×40；稳定信号还需连续两段胜出、盈亏线 ×200 且 Brier 证据 ×40。", "误报上限只针对单场，并要求每期开奖连续、完整、无选择地录入；漏记或重复会使上限失效。", "反复新建场次同样会累计误报概率。", "大小内部按大、小、三同号三分类评分；页面仍将大小归一化为 100%。", "合格旧场次最多只折算为 5 轮先验；当场最近 10 轮明显不一致时自动停用。"];
+    const incompleteBlocks = Array.from({ length: state.block.index }, (_, index) => index)
+      .filter((index) => !completeBlockRecords(items, index).length);
+    if (incompleteBlocks.length) tips.push(`有 ${incompleteBlocks.length} 个历史分段存在缺失，已整体排除，不会重排后续轮次。`);
     const legacyCount = items.length - state.evaluation.rounds;
     if (legacyCount > 0) tips.push(`本场有 ${legacyCount} 条旧版或截图记录用于计算概率，但不参与六模型公平排名。`);
     const changing = [["大小", state.changes.size], ["单双", state.changes.parity]].filter(([, change]) => change.active).map(([metric]) => metric);
@@ -1307,7 +1536,7 @@
     }
   }
 
-  function importOcrRecords() {
+  function importOcrRecordsLocked() {
     ensureSession();
     const imported = [];
     let invalid = 0;
@@ -1342,12 +1571,28 @@
       return;
     }
     records = [...imported, ...records];
-    touchSession();
     saveRecords();
+    try {
+      touchSession();
+    } catch {
+      // Imported records are already committed; session state can recover on reload.
+    }
     resetOcrResults();
     renderAll();
     els.ocrMessage.className = "form-message success";
     els.ocrMessage.textContent = `已导入当前场次 ${imported.length} 条记录${duplicates ? `，跳过 ${duplicates} 条重复记录` : ""}${invalid ? `，跳过 ${invalid} 条无效记录` : ""}。`;
+  }
+
+  async function importOcrRecords() {
+    try {
+      await withStorageWriteLock(() => {
+        syncStoredState();
+        importOcrRecordsLocked();
+      });
+    } catch (error) {
+      els.ocrMessage.className = "form-message";
+      els.ocrMessage.textContent = error?.message || "数据写入失败，请重试。";
+    }
   }
 
   function exportCsv() {
@@ -1424,11 +1669,19 @@
     if (event.key === "Enter" && !els.saveResult.disabled) saveQuickResult();
   });
   els.saveResult.addEventListener("click", saveQuickResult);
-  els.startNewSession.addEventListener("click", () => {
-    session = newSession();
-    els.quickMessage.className = "form-message success";
-    els.quickMessage.textContent = "新场次已开始，旧记录仍保留在完整记录中。";
-    renderAll();
+  els.startNewSession.addEventListener("click", async () => {
+    try {
+      await withStorageWriteLock(() => {
+        syncStoredState();
+        session = newSession();
+        renderAll();
+        els.quickMessage.className = "form-message success";
+        els.quickMessage.textContent = "新场次已开始，旧记录仍保留在完整记录中。";
+      });
+    } catch (error) {
+      els.quickMessage.className = "form-message";
+      els.quickMessage.textContent = error?.message || "新场次创建失败，请重试。";
+    }
   });
   els.quickBetSelection.addEventListener("change", () => {
     const enabled = els.quickBetSelection.value !== "none";
@@ -1438,39 +1691,93 @@
       ? bankroll ? `当前模拟余额 ${formatMoney(currentBalance())}；最低投入 2 元。` : "请先在“更多工具”里设置模拟本金。"
       : "选择方向后填写投入；页面不会推荐投入额。";
   });
-  els.saveBankroll.addEventListener("click", () => {
-    els.bankrollMessage.className = "form-message";
-    const initial = roundMoney(Number(els.initialBankroll.value));
-    if (!Number.isFinite(initial) || initial < 2) {
-      els.bankrollMessage.textContent = "模拟本金最低为 2 元。";
-      return;
+  els.saveBankroll.addEventListener("click", async () => {
+    try {
+      await withStorageWriteLock(() => {
+        syncStoredState();
+        els.bankrollMessage.className = "form-message";
+        const initial = roundMoney(Number(els.initialBankroll.value));
+        if (!Number.isFinite(initial) || initial < 2) {
+          els.bankrollMessage.textContent = "模拟本金最低为 2 元。";
+          return;
+        }
+        const required = minimumInitialForHistory();
+        if (initial < required) {
+          els.bankrollMessage.textContent = `按已有流水，本金不能低于 ${formatMoney(required)}。`;
+          return;
+        }
+        bankroll = { initial, updatedAt: new Date().toISOString() };
+        saveBankrollState();
+        renderAll();
+        els.bankrollMessage.className = "form-message success";
+        els.bankrollMessage.textContent = "模拟本金已保存。";
+      });
+    } catch (error) {
+      els.bankrollMessage.className = "form-message";
+      els.bankrollMessage.textContent = error?.message || "本金保存失败，请重试。";
     }
-    const required = minimumInitialForHistory();
-    if (initial < required) {
-      els.bankrollMessage.textContent = `按已有流水，本金不能低于 ${formatMoney(required)}。`;
-      return;
-    }
-    bankroll = { initial, updatedAt: new Date().toISOString() };
-    saveBankrollState();
-    els.bankrollMessage.className = "form-message success";
-    els.bankrollMessage.textContent = "模拟本金已保存。";
-    renderAll();
   });
   els.exportData.addEventListener("click", exportCsv);
   els.clearData.addEventListener("click", () => els.confirmDialog.showModal());
-  els.confirmDialog.addEventListener("close", () => {
+  els.confirmDialog.addEventListener("close", async () => {
     if (els.confirmDialog.returnValue !== "confirm") return;
-    records = [];
-    saveRecords();
-    session = newSession();
-    renderAll();
+    try {
+      await withStorageWriteLock(() => {
+        records = [];
+        saveRecords();
+        invalidatedSessions = new Set();
+        saveInvalidatedSessions();
+        try {
+          session = newSession();
+        } catch {
+          session = createSessionState();
+        }
+        renderAll();
+      });
+    } catch (error) {
+      els.quickMessage.className = "form-message";
+      els.quickMessage.textContent = error?.message || "记录清空失败，请重试。";
+    }
   });
-  els.recordsBody.addEventListener("click", (event) => {
+  els.recordsBody.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-delete-id]");
     if (!button) return;
-    records = records.filter((record) => record.id !== button.dataset.deleteId);
-    saveRecords();
-    renderAll();
+    const recordId = button.dataset.deleteId;
+    try {
+      await withStorageWriteLock(() => {
+        syncStoredState();
+        const target = records.find((record) => record.id === recordId);
+        if (!target) return;
+        const invalidatesEvidence = validModelBlock(target);
+        const wasCurrentSession = target.sessionId === session.id;
+        if (invalidatesEvidence) {
+          invalidatedSessions.add(target.sessionId);
+          saveInvalidatedSessions();
+          records = records.map((record) => record.sessionId === target.sessionId
+            ? { ...record, evidenceInvalidated: true }
+            : record);
+        }
+        records = records.filter((record) => record.id !== recordId);
+        saveRecords();
+        if (invalidatesEvidence && wasCurrentSession) {
+          try {
+            session = newSession();
+          } catch {
+            session = createSessionState();
+          }
+        }
+        renderAll();
+        if (invalidatesEvidence) {
+          els.quickMessage.className = "form-message";
+          els.quickMessage.textContent = wasCurrentSession
+            ? "记录已删除；原场次验证证据已作废，并已自动开始新场次。"
+            : "记录已删除；为防止事后筛选，该场次的验证证据已全部作废。";
+        }
+      });
+    } catch (error) {
+      els.quickMessage.className = "form-message";
+      els.quickMessage.textContent = error?.message || "记录删除失败，请重试。";
+    }
   });
   els.ocrFiles.addEventListener("change", () => recognizeScreenshots(els.ocrFiles.files));
   ["dragenter", "dragover"].forEach((eventName) => els.ocrDropzone.addEventListener(eventName, (event) => {
@@ -1490,6 +1797,21 @@
   });
   els.importOcrRecords.addEventListener("click", importOcrRecords);
   els.clearOcrResults.addEventListener("click", resetOcrResults);
+  window.addEventListener("storage", (event) => {
+    if (![STORAGE_KEY, BANKROLL_KEY, SESSION_KEY, INVALIDATED_SESSIONS_KEY].includes(event.key)) return;
+    clearTimeout(storageSyncTimer);
+    storageSyncTimer = setTimeout(async () => {
+      if (savingResult) return;
+      try {
+        await withStorageWriteLock(() => {
+          syncStoredState();
+          renderAll();
+        });
+      } catch {
+        // The next local action performs another synchronized read.
+      }
+    }, 75);
+  });
 
   renderAll();
 })();

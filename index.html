@@ -167,7 +167,7 @@
             <article class="panel" aria-labelledby="validation-title">
               <div class="section-heading compact"><div><p class="step">模型质量</p><h2 id="validation-title">冠军与验证</h2></div></div>
               <div id="model-leaderboard" class="model-leaderboard" aria-label="影子模型排行榜"></div>
-              <div id="model-confidence-details" class="model-confidence-details" aria-label="模型可信区间"></div>
+              <div id="model-confidence-details" class="model-confidence-details" aria-label="模型序贯证据"></div>
               <div id="cross-session-stability" class="cross-session-stability"></div>
               <ul id="validation-list" class="advice-list"></ul>
             </article>
@@ -188,7 +188,7 @@
 
       <section class="notice" aria-label="重要说明">
         <strong>模型说明</strong>
-        <p>大小与单双仍分别显示为合计 100%；大小信号会额外扣除三同号风险。系统按 10 轮锁定冠军与挑战者，使用连续有效置信下界及公平随机空白对照；旧场次最多只折算为 5 轮预热。检测到分布变化会自动观望。</p>
+        <p>大小与单双仍分别显示为合计 100%；大小后台按大、小、三同号统一评分。首段 10 轮只选模，之后仅用完整锁定段累计序贯证据。误报上限要求每期开奖连续、完整、无选择地录入；漏记或重复会使上限失效。</p>
       </section>
     </main>
 
@@ -200,6 +200,7 @@
       </form>
     </dialog>
 
-    <script src="app.js"></script>
+    <script src="model-core.js?v=4"></script>
+    <script src="app.js?v=4"></script>
   </body>
 </html>
