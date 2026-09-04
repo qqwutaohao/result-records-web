@@ -31,7 +31,7 @@
               <h2 id="quick-title">录入结果，更新参考</h2>
             </div>
             <div class="quick-top-actions">
-              <span id="session-status" class="quick-balance">收集中 0/10</span>
+              <span id="session-status" class="quick-balance">对比中 0/20</span>
               <button id="start-new-session" class="secondary-button compact-button" type="button">新场次</button>
             </div>
           </div>
@@ -71,8 +71,8 @@
 
             <div class="model-board" aria-label="下一轮模型参考概率">
               <div class="model-board-heading">
-                <div><span>下一轮模型参考</span><strong id="model-confidence">理论基准</strong></div>
-                <span id="model-sample">本场 0 轮</span>
+                <div><span>下一轮模型参考</span><strong id="model-confidence">固定 50% · 对比收集中</strong></div>
+                <span id="model-sample">本场 0 轮 · 对比 0 轮</span>
               </div>
 
               <article class="model-pair">
@@ -92,8 +92,8 @@
               </article>
 
               <div class="model-meta">
-                <span id="model-note">前 10 轮按理论 50% / 50% 展示</span>
-                <strong id="model-validation">滚动验证 0/20</strong>
+                <span id="model-note">三套模型后台同步预测，还需 20 轮完成首轮对比</span>
+                <strong id="model-validation">三模型对比 0/20</strong>
               </div>
             </div>
           </div>
@@ -164,6 +164,7 @@
             </article>
             <article class="panel" aria-labelledby="validation-title">
               <div class="section-heading compact"><div><p class="step">模型质量</p><h2 id="validation-title">滚动检验</h2></div></div>
+              <div id="model-leaderboard" class="model-leaderboard" aria-label="影子模型排行榜"></div>
               <ul id="validation-list" class="advice-list"></ul>
             </article>
           </section>
@@ -183,7 +184,7 @@
 
       <section class="notice" aria-label="重要说明">
         <strong>模型说明</strong>
-        <p>大小与单双分别合计 100%。模型采用 Beta(10,10) 平滑与 20 轮半衰期加权，只是历史参考；若每期独立且公平，历史数据不会提高下一期真实命中率。</p>
+        <p>大小与单双分别合计 100%。固定 50%、静态贝叶斯与动态贝叶斯会同步进行开奖前预测；影子模型未通过比较时自动使用 50% 基准。若每期独立且公平，历史数据不会提高下一期真实命中率。</p>
       </section>
     </main>
 

@@ -112,6 +112,16 @@ main { display: grid; gap: 14px; padding-bottom: 40px; }
 .parity-pair .pair-bar i { background: var(--blue); }
 .model-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 3px; color: var(--muted); font-size: 0.7rem; }
 .model-meta strong { color: var(--text); font-size: 0.72rem; text-align: right; }
+.model-leaderboard { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: #0c1321; }
+.leaderboard-head, .leaderboard-row { display: grid; grid-template-columns: minmax(112px, 1.4fr) repeat(3, minmax(58px, 0.72fr)); align-items: center; gap: 8px; padding: 10px 12px; }
+.leaderboard-head { color: var(--muted); font-size: 0.68rem; }
+.leaderboard-row { border-top: 1px solid var(--line); font-size: 0.76rem; font-variant-numeric: tabular-nums; }
+.leaderboard-row.active { background: rgba(94, 234, 212, 0.06); }
+.leaderboard-row > div strong, .leaderboard-row > span b { display: block; color: var(--text); }
+.leaderboard-row small { display: block; margin-top: 2px; color: var(--muted); font-size: 0.62rem; font-weight: 500; }
+.leaderboard-row > span { color: var(--muted); }
+.leaderboard-row > span:last-child { text-align: right; }
+.model-leaderboard + .advice-list { margin-top: 14px; }
 .quick-flow { display: grid; grid-template-columns: 1fr 1.12fr 1fr; gap: 12px; }
 .quick-stage, .quick-analysis { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #0c1321; }
 .quick-stage-label { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; color: var(--text); font-weight: 700; }
@@ -402,6 +412,7 @@ dialog p { color: var(--muted); }
   .result-entry-card, .model-board { padding: 14px; }
   .model-meta { align-items: flex-start; flex-direction: column; gap: 4px; }
   .model-meta strong { text-align: left; }
+  .leaderboard-head, .leaderboard-row { grid-template-columns: minmax(98px, 1.25fr) repeat(3, minmax(52px, 0.7fr)); gap: 5px; padding-inline: 9px; }
   .advanced-tools > summary { align-items: flex-start; flex-direction: column; gap: 2px; }
   .advanced-tools > summary small { margin-left: 0; }
   fieldset { padding: 15px; }
