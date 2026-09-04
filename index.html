@@ -31,7 +31,7 @@
               <h2 id="quick-title">录入结果，更新参考</h2>
             </div>
             <div class="quick-top-actions">
-              <span id="session-status" class="quick-balance">第 1 段 · 0/20</span>
+              <span id="session-status" class="quick-balance">第 1 段 · 0/10</span>
               <button id="start-new-session" class="secondary-button compact-button" type="button">新场次</button>
             </div>
           </div>
@@ -94,7 +94,7 @@
               </article>
 
               <div class="model-meta">
-                <span id="model-note">首段固定使用 50% 基准，还需 20 轮完成</span>
+                <span id="model-note">首段固定使用 50% 基准，还需 10 轮完成</span>
                 <strong id="model-validation">大小收集中 · 单双收集中</strong>
               </div>
             </div>
@@ -165,7 +165,7 @@
               <div id="history-stats" class="history-stats empty-state">录入后显示大小与单双频率。</div>
             </article>
             <article class="panel" aria-labelledby="validation-title">
-              <div class="section-heading compact"><div><p class="step">模型质量</p><h2 id="validation-title">滚动检验</h2></div></div>
+              <div class="section-heading compact"><div><p class="step">模型质量</p><h2 id="validation-title">冠军与验证</h2></div></div>
               <div id="model-leaderboard" class="model-leaderboard" aria-label="影子模型排行榜"></div>
               <div id="model-confidence-details" class="model-confidence-details" aria-label="模型可信区间"></div>
               <div id="cross-session-stability" class="cross-session-stability"></div>
@@ -188,7 +188,7 @@
 
       <section class="notice" aria-label="重要说明">
         <strong>模型说明</strong>
-        <p>大小与单双仍分别显示为合计 100%；大小信号会额外扣除三同号风险。只有实际胜率及其验证下界跨过赔率 1.96 的 51.02% 盈亏线，并通过后续独立验证段时才显示信号；检测到分布变化会自动观望。</p>
+        <p>大小与单双仍分别显示为合计 100%；大小信号会额外扣除三同号风险。系统按 10 轮锁定冠军与挑战者，使用连续有效置信下界及公平随机空白对照；旧场次最多只折算为 5 轮预热。检测到分布变化会自动观望。</p>
       </section>
     </main>
 

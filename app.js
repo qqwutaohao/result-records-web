@@ -6,6 +6,7 @@
   const TITLE_KEY = "k3-verifier-title-v1";
   const SESSION_KEY = "k3-verifier-model-session-v1";
   const DEFAULT_TITLE = "结果记录台";
+  const MODEL_PROTOCOL_VERSION = 3;
   const SESSION_GAP_MS = 30 * 60 * 1000;
   const PRIOR_SIDE = 10;
   const DICE_PRIOR_FACE = 4;
@@ -13,6 +14,13 @@
   const TRIPLE_PRIOR_TOTAL = 36;
   const DECAY_HALF_LIFE = 20;
   const ENSEMBLE_ETA = 2;
+  const VALIDATION_BLOCK_SIZE = 10;
+  const EVIDENCE_MIN_ROUNDS = 20;
+  const HISTORY_PRIOR_ROUNDS = 5;
+  const HISTORY_QUALIFIED_ROUNDS = 40;
+  const HISTORY_MAX_RECORDS = 200;
+  const CONFIDENCE_ALPHA = 0.05;
+  const NULL_TEST_ITERATIONS = 400;
   const ODDS = 1.96;
   const BREAK_EVEN_PROBABILITY = 1 / ODDS;
   const CUSUM_RECENT_SIZE = 10;
@@ -186,6 +194,43 @@
     return records.filter((record) => record.sessionId === active.id);
   }
 
+  function outcomeRates(items) {
+    let big = 0;
+    let sizeTotal = 0;
+    let odd = 0;
+    items.forEach((record) => {
+      const result = classify(record.officialDice);
+      if (!result.triple) {
+        sizeTotal += 1;
+        if (result.size === "big") big += 1;
+      }
+      if (result.parity === "odd") odd += 1;
+    });
+    return {
+      big: sizeTotal ? big / sizeTotal : null,
+      odd: items.length ? odd / items.length : null,
+    };
+  }
+
+  function historicalPriorItems(currentItems) {
+    const groups = new Map();
+    records.forEach((record) => {
+      if (record.sessionId === session.id || record.source !== "quick" || !record.sessionId) return;
+      if (!groups.has(record.sessionId)) groups.set(record.sessionId, []);
+      groups.get(record.sessionId).push(record);
+    });
+    const historical = [...groups.values()].filter((items) => items.length >= HISTORY_QUALIFIED_ROUNDS)
+      .flat()
+      .sort((first, second) => new Date(second.createdAt) - new Date(first.createdAt))
+      .slice(0, HISTORY_MAX_RECORDS);
+    if (!historical.length || currentItems.length < VALIDATION_BLOCK_SIZE) return historical;
+    const currentRates = outcomeRates(currentItems.slice(0, VALIDATION_BLOCK_SIZE));
+    const historicalRates = outcomeRates(historical);
+    const inconsistentSize = currentRates.big !== null && historicalRates.big !== null && Math.abs(currentRates.big - historicalRates.big) > 0.25;
+    const inconsistentParity = currentRates.odd !== null && historicalRates.odd !== null && Math.abs(currentRates.odd - historicalRates.odd) > 0.25;
+    return inconsistentSize || inconsistentParity ? [] : historical;
+  }
+
   function applyTitle(title) {
     const value = title || DEFAULT_TITLE;
     els.appTitle.textContent = value;
@@ -252,7 +297,7 @@
     return MODEL_DEFINITIONS.find((model) => model.key === key)?.name || "未知模型";
   }
 
-  function bayesModel(items, decayed) {
+  function bayesModel(items, decayed, historicalItems) {
     let big = 0;
     let small = 0;
     let odd = 0;
@@ -269,6 +314,24 @@
       if (result.parity === "odd") odd += weight;
       if (result.parity === "even") even += weight;
     });
+    if (historicalItems.length) {
+      const counts = { big: 0, small: 0, odd: 0, even: 0, triple: 0 };
+      historicalItems.forEach((record) => {
+        const result = classify(record.officialDice);
+        if (result.size) counts[result.size] += 1;
+        counts[result.parity] += 1;
+        if (result.triple) counts.triple += 1;
+      });
+      const sizeTotal = counts.big + counts.small;
+      if (sizeTotal) {
+        big += HISTORY_PRIOR_ROUNDS * counts.big / sizeTotal;
+        small += HISTORY_PRIOR_ROUNDS * counts.small / sizeTotal;
+      }
+      odd += HISTORY_PRIOR_ROUNDS * counts.odd / historicalItems.length;
+      even += HISTORY_PRIOR_ROUNDS * counts.even / historicalItems.length;
+      triples += HISTORY_PRIOR_ROUNDS * counts.triple / historicalItems.length;
+      total += HISTORY_PRIOR_ROUNDS;
+    }
     const sizeProbability = (PRIOR_SIDE + big) / (PRIOR_SIDE * 2 + big + small);
     const parityProbability = (PRIOR_SIDE + odd) / (PRIOR_SIDE * 2 + odd + even);
     return {
@@ -280,11 +343,20 @@
     };
   }
 
-  function diceBiasModel(items) {
+  function diceBiasModel(items, historicalItems) {
     const counts = Array.from({ length: 3 }, () => Array(6).fill(0));
     items.forEach((record) => record.officialDice.forEach((value, position) => {
       counts[position][Number(value) - 1] += 1;
     }));
+    if (historicalItems.length) {
+      const historicalCounts = Array.from({ length: 3 }, () => Array(6).fill(0));
+      historicalItems.forEach((record) => record.officialDice.forEach((value, position) => {
+        historicalCounts[position][Number(value) - 1] += 1;
+      }));
+      historicalCounts.forEach((positionCounts, position) => positionCounts.forEach((count, face) => {
+        counts[position][face] += HISTORY_PRIOR_ROUNDS * count / historicalItems.length;
+      }));
+    }
     const probabilities = counts.map((positionCounts) => {
       const total = positionCounts.reduce((sum, count) => sum + count, 0) + DICE_PRIOR_FACE * 6;
       return positionCounts.map((count) => (count + DICE_PRIOR_FACE) / total);
@@ -317,11 +389,20 @@
     };
   }
 
-  function pooledDiceBiasModel(items) {
+  function pooledDiceBiasModel(items, historicalItems) {
     const counts = Array(6).fill(0);
     items.forEach((record) => record.officialDice.forEach((value) => {
       counts[Number(value) - 1] += 1;
     }));
+    if (historicalItems.length) {
+      const historicalCounts = Array(6).fill(0);
+      historicalItems.forEach((record) => record.officialDice.forEach((value) => {
+        historicalCounts[Number(value) - 1] += 1;
+      }));
+      historicalCounts.forEach((count, face) => {
+        counts[face] += HISTORY_PRIOR_ROUNDS * 3 * count / (historicalItems.length * 3);
+      });
+    }
     const total = counts.reduce((sum, count) => sum + count, 0) + DICE_PRIOR_FACE * 6;
     const probabilities = counts.map((count) => (count + DICE_PRIOR_FACE) / total);
     let big = 0;
@@ -381,12 +462,13 @@
   }
 
   function shadowPredictions(items) {
+    const historicalItems = historicalPriorItems(items);
     const predictions = {
       baseline: { big: 0.5, small: 0.5, odd: 0.5, even: 0.5, triple: 1 / 36 },
-      static: bayesModel(items, false),
-      dynamic: bayesModel(items, true),
-      diceBias: diceBiasModel(items),
-      pooledBias: pooledDiceBiasModel(items),
+      static: bayesModel(items, false, historicalItems),
+      dynamic: bayesModel(items, true, historicalItems),
+      diceBias: diceBiasModel(items, historicalItems),
+      pooledBias: pooledDiceBiasModel(items, historicalItems),
     };
     const sizeWeights = ensembleWeights(items, "size");
     const parityWeights = ensembleWeights(items, "parity");
@@ -413,7 +495,8 @@
   }
 
   function hasComparablePredictions(record) {
-    return MODEL_DEFINITIONS.every(({ key }) => predictionAvailable(record, key));
+    return record.modelProtocolVersion === MODEL_PROTOCOL_VERSION
+      && MODEL_DEFINITIONS.every(({ key }) => predictionAvailable(record, key));
   }
 
   function evaluateModels(items) {
@@ -460,7 +543,7 @@
   }
 
   function selectActiveModel(evaluation, metric) {
-    if (evaluation.rounds < 20) return "baseline";
+    if (evaluation.rounds < VALIDATION_BLOCK_SIZE) return "baseline";
     const baseline = evaluation.models.baseline[metric];
     const candidates = MODEL_DEFINITIONS.filter(({ key }) => key !== "baseline").map(({ key }) => evaluation.models[key])
       .filter((model) => Number.isFinite(model[metric]))
@@ -496,8 +579,8 @@
     if (modelKey === "baseline") return 0;
     let streak = 0;
     for (let index = blockIndex - 1; index >= 1; index -= 1) {
-      const blockItems = chronological.slice(index * 20, (index + 1) * 20);
-      if (blockItems.length < 20 || savedModelKeys(blockItems[0])[metric] !== modelKey) break;
+      const blockItems = chronological.slice(index * VALIDATION_BLOCK_SIZE, (index + 1) * VALIDATION_BLOCK_SIZE);
+      if (blockItems.length < VALIDATION_BLOCK_SIZE || savedModelKeys(blockItems[0])[metric] !== modelKey) break;
       if (!(blockImprovement(blockItems, modelKey, metric) > 0)) break;
       streak += 1;
     }
@@ -507,7 +590,7 @@
   function nextBlockModel(chronological, evaluation, blockIndex, metric) {
     if (blockIndex === 0) return "baseline";
     if (blockIndex > 1) {
-      const previousBlock = chronological.slice((blockIndex - 1) * 20, blockIndex * 20);
+      const previousBlock = chronological.slice((blockIndex - 1) * VALIDATION_BLOCK_SIZE, blockIndex * VALIDATION_BLOCK_SIZE);
       const previousKey = savedModelKeys(previousBlock[0])[metric];
       if (previousKey !== "baseline" && blockImprovement(previousBlock, previousKey, metric) > 0) return previousKey;
     }
@@ -516,12 +599,12 @@
 
   function lockedBlockState(items, evaluation) {
     const chronological = items.filter(hasComparablePredictions).reverse();
-    const position = chronological.length % 20;
-    const index = Math.floor(chronological.length / 20);
+    const position = chronological.length % VALIDATION_BLOCK_SIZE;
+    const index = Math.floor(chronological.length / VALIDATION_BLOCK_SIZE);
     const activeKeys = position === 0 ? {
       size: nextBlockModel(chronological, evaluation, index, "size"),
       parity: nextBlockModel(chronological, evaluation, index, "parity"),
-    } : savedModelKeys(chronological[index * 20]);
+    } : savedModelKeys(chronological[index * VALIDATION_BLOCK_SIZE]);
     const validationStreaks = {
       size: validationStreak(chronological, index, activeKeys.size, "size"),
       parity: validationStreak(chronological, index, activeKeys.parity, "parity"),
@@ -547,9 +630,9 @@
     });
     if (!differences.length) return { count: 0, mean: null, lower: null, upper: null };
     const mean = differences.reduce((total, value) => total + value, 0) / differences.length;
-    if (differences.length < 2) return { count: differences.length, mean, lower: null, upper: null };
-    const variance = differences.reduce((total, value) => total + (value - mean) ** 2, 0) / (differences.length - 1);
-    const margin = 1.96 * Math.sqrt(variance / differences.length);
+    const candidateCount = MODEL_DEFINITIONS.length - 1;
+    const alphaAtCount = (CONFIDENCE_ALPHA / candidateCount) / (differences.length * (differences.length + 1));
+    const margin = Math.sqrt(Math.log(2 / alphaAtCount) / (2 * differences.length));
     return { count: differences.length, mean, lower: mean - margin, upper: mean + margin };
   }
 
@@ -585,7 +668,7 @@
     const candidate = bestCandidate(evaluation, metric);
     const interval = pairedConfidence(items, candidate, metric);
     let label = "收集中";
-    if (interval.count >= 20 && interval.lower !== null) {
+    if (interval.count >= EVIDENCE_MIN_ROUNDS && interval.lower !== null) {
       if (interval.upper < 0) label = "未优于基准";
       else if (interval.lower > 0 && crossSession.stable[metric] === candidate) label = "多场稳定";
       else if (interval.lower > 0) label = "初步优势";
@@ -594,15 +677,12 @@
     return { candidate, interval, label };
   }
 
-  function wilsonInterval(hits, count) {
+  function proportionConfidenceSequence(hits, count) {
     if (!count) return { lower: null, upper: null };
-    const z = 1.96;
-    const zSquared = z ** 2;
     const rate = hits / count;
-    const denominator = 1 + zSquared / count;
-    const center = (rate + zSquared / (2 * count)) / denominator;
-    const margin = z * Math.sqrt(rate * (1 - rate) / count + zSquared / (4 * count ** 2)) / denominator;
-    return { lower: Math.max(0, center - margin), upper: Math.min(1, center + margin) };
+    const alphaAtCount = (CONFIDENCE_ALPHA / 2) / (count * (count + 1));
+    const margin = Math.sqrt(Math.log(1 / alphaAtCount) / (2 * count));
+    return { lower: Math.max(0, rate - margin), upper: Math.min(1, rate + margin) };
   }
 
   function directionConfidence(items, modelKey, metric) {
@@ -621,7 +701,53 @@
         : pickedFirst === (result.parity === "odd");
       if (won) hits += 1;
     });
-    return { hits, count, ...wilsonInterval(hits, count) };
+    return { hits, count, ...proportionConfidenceSequence(hits, count) };
+  }
+
+  function seededRandom(seed) {
+    let state = seed >>> 0;
+    return () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 4294967296;
+    };
+  }
+
+  function fairNullTest(items, modelKey, metric) {
+    const chronological = items.filter(hasComparablePredictions).reverse();
+    const completedCount = Math.floor(chronological.length / VALIDATION_BLOCK_SIZE) * VALIDATION_BLOCK_SIZE;
+    const completed = chronological.slice(0, completedCount).slice(-HISTORY_MAX_RECORDS);
+    let observedHits = 0;
+    let decisions = 0;
+    completed.forEach((record) => {
+      const prediction = record.modelPredictions[modelKey];
+      const firstProbability = metric === "size" ? prediction.big * (1 - prediction.triple) : prediction.odd;
+      const secondProbability = metric === "size" ? prediction.small * (1 - prediction.triple) : prediction.even;
+      if (Math.abs(firstProbability - secondProbability) < 1e-9) return;
+      decisions += 1;
+      const result = classify(record.officialDice);
+      const pickedFirst = firstProbability > secondProbability;
+      const won = metric === "size"
+        ? !result.triple && pickedFirst === (result.size === "big")
+        : pickedFirst === (result.parity === "odd");
+      if (won) observedHits += 1;
+    });
+    if (!decisions) return { decisions: 0, observedHits: 0, pValue: null };
+    const keySeed = [...`${modelKey}-${metric}-${decisions}`].reduce((total, char) => Math.imul(total ^ char.charCodeAt(0), 16777619), 2166136261);
+    const random = seededRandom(keySeed);
+    const nullWinProbability = metric === "size" ? 35 / 72 : 0.5;
+    let atLeastObserved = 0;
+    for (let iteration = 0; iteration < NULL_TEST_ITERATIONS; iteration += 1) {
+      let simulatedHits = 0;
+      for (let decision = 0; decision < decisions; decision += 1) {
+        if (random() < nullWinProbability) simulatedHits += 1;
+      }
+      if (simulatedHits >= observedHits) atLeastObserved += 1;
+    }
+    return {
+      decisions,
+      observedHits,
+      pValue: (atLeastObserved + 1) / (NULL_TEST_ITERATIONS + 1),
+    };
   }
 
   function metricChangeState(items, metric) {
@@ -664,18 +790,20 @@
     const actualWinProbability = Math.max(firstProbability, secondProbability);
     const interval = pairedConfidence(items, modelKey, metric);
     const directionEvidence = directionConfidence(items, modelKey, metric);
+    const nullTest = fairNullTest(items, modelKey, metric);
     const direction = firstProbability >= secondProbability ? firstLabel : secondLabel;
     const streak = state.block.validationStreaks[metric];
     const changing = state.changes[metric].active;
     const issued = !changing
       && modelKey !== "baseline"
       && streak >= 1
-      && interval.count >= 20
-      && interval.lower !== null
-      && interval.lower > 0
+      && interval.count >= EVIDENCE_MIN_ROUNDS
+      && interval.mean > 0
       && actualWinProbability > BREAK_EVEN_PROBABILITY
-      && directionEvidence.count >= 20
-      && directionEvidence.lower > BREAK_EVEN_PROBABILITY;
+      && directionEvidence.count >= EVIDENCE_MIN_ROUNDS
+      && directionEvidence.lower > BREAK_EVEN_PROBABILITY
+      && nullTest.pValue !== null
+      && nullTest.pValue <= CONFIDENCE_ALPHA;
     let label = "观望";
     if (changing) label = "变化中 · 观望";
     else if (modelKey !== "baseline" && streak < 1) label = "验证中 · 观望";
@@ -692,6 +820,7 @@
       confidenceUpper: interval.upper,
       winRateLower: directionEvidence.lower,
       winRateUpper: directionEvidence.upper,
+      nullPValue: nullTest.pValue,
     };
   }
 
@@ -751,13 +880,14 @@
 
     const bothBaseline = state.activeKeys.size === "baseline" && state.activeKeys.parity === "baseline";
     const sameModel = state.activeKeys.size === state.activeKeys.parity;
-    els.sessionStatus.textContent = `第 ${state.block.index + 1} 段 · ${state.block.position}/20`;
+    els.sessionStatus.textContent = `第 ${state.block.index + 1} 段 · ${state.block.position}/${VALIDATION_BLOCK_SIZE}`;
     els.modelConfidence.textContent = state.block.index === 0
       ? "固定 50% · 首段锁定"
       : sameModel
         ? `${modelName(state.activeKeys.size)} · ${bothBaseline ? "自动降级" : state.evaluation.rounds < 100 ? "实验领先" : "当前最优"}`
         : `大小 ${modelName(state.activeKeys.size)} · 单双 ${modelName(state.activeKeys.parity)}`;
-    els.modelSample.textContent = `本场 ${items.length} 轮 · 本段模型已锁定`;
+    const warmHistory = historicalPriorItems(items).length > 0;
+    els.modelSample.textContent = `本场 ${items.length} 轮 · ${warmHistory ? "历史折算 5 轮" : "无历史预热"}`;
     els.probBig.textContent = `${size[0].toFixed(1)}%`;
     els.probSmall.textContent = `${size[1].toFixed(1)}%`;
     els.probOdd.textContent = `${parity[0].toFixed(1)}%`;
@@ -766,7 +896,7 @@
     els.barOdd.style.width = `${parity[0]}%`;
 
     if (state.block.index === 0) {
-      els.modelNote.textContent = `首段固定使用 50% 基准，还需 ${20 - state.block.position} 轮完成`;
+      els.modelNote.textContent = `首段固定使用 50% 基准，还需 ${VALIDATION_BLOCK_SIZE - state.block.position} 轮完成`;
     } else if (bothBaseline) {
       els.modelNote.textContent = `第 ${state.block.index + 1} 段已锁定 50% 基准，不会中途切换`;
     } else {
@@ -871,6 +1001,7 @@
       officialDice: dice,
       source: "quick",
       sessionId: session.id,
+      modelProtocolVersion: MODEL_PROTOCOL_VERSION,
       modelPredictions: frozenPredictions,
       modelPrediction: {
         big: frozenPredictions[state.activeKeys.size].big,
@@ -1018,8 +1149,9 @@
       return `<article>
       <div><span>${metric}可信度</span><strong>${confidence.label}</strong></div>
       <p>${escapeHtml(modelName(confidence.candidate))} 对比固定 50%</p>
-      <small>${confidence.interval.lower === null ? `有效样本 ${confidence.interval.count}/20` : `近似 95% Brier 差值区间 ${signedScore(confidence.interval.lower)} ～ ${signedScore(confidence.interval.upper)}`}</small>
+      <small>${confidence.interval.lower === null ? `有效样本 ${confidence.interval.count}/${EVIDENCE_MIN_ROUNDS}` : `连续有效 Brier 区间 ${signedScore(confidence.interval.lower)} ～ ${signedScore(confidence.interval.upper)}`}</small>
       <small>最高实际胜率 ${(signal.probability * 100).toFixed(1)}% · 盈亏线 ${(BREAK_EVEN_PROBABILITY * 100).toFixed(1)}% · 独立验证 ${Math.min(signal.validationStreak, 2)}/2</small>
+      <small>胜率连续下界 ${signal.winRateLower === null ? "—" : `${(signal.winRateLower * 100).toFixed(1)}%`} · 公平空白对照 ${signal.nullPValue === null ? "—" : `p=${signal.nullPValue.toFixed(3)}`}</small>
       <small>信号覆盖 ${coverage} · 输出 ${metrics.decisions}/${metrics.eligible} · 命中 ${hitRate}</small>
     </article>`;
     }).join("");
@@ -1032,13 +1164,13 @@
     };
     els.crossSessionStability.innerHTML = `<div class="stability-heading"><span>跨场稳定性</span><strong>${crossSession.qualified} 个合格场次</strong></div><div class="stability-grid">${stabilityText("size", "大小")}${stabilityText("parity", "单双")}</div>`;
 
-    const tips = ["每个验证段固定 20 轮；模型先在前段选择，再用后续独立段验证，连续两段胜出才标记稳定。", "六套影子模型持续同步评分；大小信号额外扣除三同号风险。"];
+    const tips = ["每个验证段固定 10 轮；一次只验证当前挑战者，连续两段胜出才标记稳定。", "信号采用可反复查看的连续置信下界，并与公平随机空白对照比较。", "合格旧场次最多只折算为 5 轮先验；当场最近 10 轮明显不一致时自动停用。"];
     const legacyCount = items.length - state.evaluation.rounds;
     if (legacyCount > 0) tips.push(`本场有 ${legacyCount} 条旧版或截图记录用于计算概率，但不参与六模型公平排名。`);
     const changing = [["大小", state.changes.size], ["单双", state.changes.parity]].filter(([, change]) => change.active).map(([metric]) => metric);
     if (changing.length) tips.push(`${changing.join("、")}检测到近期分布变化，信号已暂停，等待动态模型适应。`);
     if (state.block.index === 0) {
-      tips.push(`首段进度 ${state.block.position}/20；固定使用 50% 基准。`);
+      tips.push(`首段进度 ${state.block.position}/${VALIDATION_BLOCK_SIZE}；固定使用 50% 基准。`);
     } else {
       const bothBaseline = state.activeKeys.size === "baseline" && state.activeKeys.parity === "baseline";
       tips.push(bothBaseline
