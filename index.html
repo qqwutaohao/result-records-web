@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0b1220" />
+    <meta name="theme-color" content="#080d18" />
     <meta name="robots" content="noindex,nofollow" />
     <title>结果记录台</title>
     <link rel="icon" href="data:," />
@@ -12,340 +12,186 @@
   <body>
     <header class="hero">
       <div>
-        <p class="eyebrow">LOCAL · 本地数据工具</p>
+        <p class="eyebrow">实时记录 · 本地数据工具</p>
         <div class="title-editor">
           <h1 id="app-title">结果记录台</h1>
           <input id="app-title-input" class="hidden" type="text" maxlength="20" aria-label="自定义网页标题" />
           <button id="edit-title" class="title-edit-button" type="button">修改标题</button>
         </div>
-        <p class="hero-copy">核对官方骰子与主播口播，记录模拟本金、逐轮结算、理论概率和历史频率。</p>
         <p id="title-message" class="title-message" role="status" aria-live="polite"></p>
       </div>
-      <div class="privacy-badge">数据仅保存在本机浏览器</div>
     </header>
 
     <main>
       <div class="quick-layout">
-      <section class="quick-round" aria-labelledby="quick-title">
-        <div class="quick-topline">
-          <div>
-            <p class="step">一分钟操作台</p>
-            <h2 id="quick-title">先预判，再验证</h2>
+        <section class="quick-round" aria-labelledby="quick-title">
+          <div class="quick-topline">
+            <div>
+              <p class="step">一分钟记录</p>
+              <h2 id="quick-title">录入结果，更新参考</h2>
+            </div>
+            <div class="quick-top-actions">
+              <span id="session-status" class="quick-balance">收集中 0/10</span>
+              <button id="start-new-session" class="secondary-button compact-button" type="button">新场次</button>
+            </div>
           </div>
-          <span id="quick-balance" class="quick-balance">余额未设置</span>
-        </div>
 
-        <div class="quick-flow">
-          <div class="quick-stage">
-            <div class="quick-stage-label"><b>1</b><span>主播预判</span></div>
-            <div class="quick-streamer-row">
-              <label>主播档案
-                <select id="quick-streamer" aria-label="选择主播档案"></select>
+          <div class="model-workspace">
+            <div class="result-entry-card">
+              <label class="quick-result-label">本期三个数字
+                <input id="quick-result" type="text" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="例如 425" />
               </label>
-              <button id="manage-streamers" class="secondary-button compact-button" type="button">管理</button>
-              <span id="quick-profile-status" class="quick-profile-status">0/10 轮</span>
-            </div>
-            <div class="quick-choice-row">
-              <span>大小</span>
-              <button type="button" data-quick-size="big">大</button>
-              <button type="button" data-quick-size="small">小</button>
-            </div>
-            <div class="quick-choice-row">
-              <span>单双</span>
-              <button type="button" data-quick-parity="odd">单</button>
-              <button type="button" data-quick-parity="even">双</button>
-            </div>
-            <div class="quick-actions">
-              <button id="quick-watch" class="secondary-button" type="button">主播观望</button>
-              <button id="lock-prediction" class="primary-button" type="button">确认预判</button>
-            </div>
-          </div>
+              <div id="quick-result-preview" class="quick-result-preview">输入三个 1–6 的数字</div>
 
-          <div id="quick-analysis" class="quick-analysis">
-            <span>系统反馈</span>
-            <strong id="quick-analysis-title">等待主播预判</strong>
-            <p id="quick-analysis-text">先选择大小、单双，或点击“主播观望”。</p>
-            <div id="quick-baseline" class="quick-baseline" aria-label="理论概率基线"></div>
-          </div>
+              <details class="optional-entry">
+                <summary>期号与金额测试（选填）</summary>
+                <div class="optional-entry-grid">
+                  <label>期号或备注
+                    <input id="quick-issue" type="text" maxlength="30" placeholder="例如：第 042 期" />
+                  </label>
+                  <label>本轮选择
+                    <select id="quick-bet-selection">
+                      <option value="none">不做金额测试</option>
+                      <option value="big">大</option>
+                      <option value="small">小</option>
+                      <option value="odd">单</option>
+                      <option value="even">双</option>
+                    </select>
+                  </label>
+                  <label>本轮投入
+                    <div class="money-input"><span>¥</span><input id="quick-stake" type="number" min="2" step="0.01" inputmode="decimal" placeholder="最低 2 元" disabled /></div>
+                  </label>
+                </div>
+                <p id="quick-stake-hint" class="fine-print">选择方向后填写投入；页面不会推荐投入额。</p>
+              </details>
 
-          <div class="quick-stage">
-            <div class="quick-stage-label"><b>2</b><span>开奖结果</span></div>
-            <label class="quick-result-label">三个数字
-              <input id="quick-result" type="text" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="例如 425" disabled />
-            </label>
-            <div id="quick-result-preview" class="quick-result-preview">确认预判后输入结果</div>
-            <button id="settle-prediction" class="primary-button" type="button" disabled>验证并记录</button>
-          </div>
-        </div>
-        <p id="quick-message" class="form-message" role="status" aria-live="polite"></p>
-      </section>
+              <button id="save-result" class="primary-button" type="button" disabled>记录并计算下一轮</button>
+              <p id="quick-message" class="form-message" role="status" aria-live="polite"></p>
+            </div>
 
-      <aside class="recent-rail" aria-labelledby="recent-rail-title">
-        <div class="recent-rail-heading">
-          <div>
-            <p class="step">最近记录</p>
-            <h2 id="recent-rail-title">历史长轴</h2>
+            <div class="model-board" aria-label="下一轮模型参考概率">
+              <div class="model-board-heading">
+                <div><span>下一轮模型参考</span><strong id="model-confidence">理论基准</strong></div>
+                <span id="model-sample">本场 0 轮</span>
+              </div>
+
+              <article class="model-pair">
+                <div class="model-pair-values">
+                  <div><span>大</span><strong id="prob-big">50.0%</strong></div>
+                  <div><span>小</span><strong id="prob-small">50.0%</strong></div>
+                </div>
+                <div class="pair-bar" aria-hidden="true"><i id="bar-big" style="width:50%"></i></div>
+              </article>
+
+              <article class="model-pair parity-pair">
+                <div class="model-pair-values">
+                  <div><span>单</span><strong id="prob-odd">50.0%</strong></div>
+                  <div><span>双</span><strong id="prob-even">50.0%</strong></div>
+                </div>
+                <div class="pair-bar" aria-hidden="true"><i id="bar-odd" style="width:50%"></i></div>
+              </article>
+
+              <div class="model-meta">
+                <span id="model-note">前 10 轮按理论 50% / 50% 展示</span>
+                <strong id="model-validation">滚动验证 0/20</strong>
+              </div>
+            </div>
           </div>
-          <span id="quick-history-count">0 期</span>
-        </div>
-        <div id="quick-history-list" class="recent-rail-list">
-          <p class="recent-rail-empty">暂无记录</p>
-        </div>
-      </aside>
+        </section>
+
+        <aside class="recent-rail" aria-labelledby="recent-rail-title">
+          <div class="recent-rail-heading">
+            <div><p class="step">最近记录</p><h2 id="recent-rail-title">历史长轴</h2></div>
+            <span id="quick-history-count">0 期</span>
+          </div>
+          <div id="quick-history-list" class="recent-rail-list"><p class="recent-rail-empty">暂无记录</p></div>
+        </aside>
       </div>
 
       <details class="advanced-tools">
-        <summary><span>更多工具</span><small>本金、完整补录、截图、概率与历史</small></summary>
+        <summary><span>更多工具</span><small>本金、截图补录、模型检验与完整记录</small></summary>
         <div class="advanced-content">
-      <section class="panel bankroll-panel" aria-labelledby="bankroll-title">
-        <div class="section-heading">
-          <div>
-            <p class="step">01 · 模拟账户</p>
-            <h2 id="bankroll-title">本金与结算</h2>
-          </div>
-          <span class="formula-note">固定赔率 1.96 · 仅作测试记录</span>
-        </div>
-        <div class="bankroll-layout">
-          <div class="bankroll-setup">
-            <label>模拟本金
-              <div class="money-input"><span>¥</span><input id="initial-bankroll" type="number" min="2" step="0.01" inputmode="decimal" placeholder="例如：1000" /></div>
+          <section class="panel bankroll-panel" aria-labelledby="bankroll-title">
+            <div class="section-heading">
+              <div><p class="step">模拟账户</p><h2 id="bankroll-title">本金与结算</h2></div>
+              <span class="formula-note">固定赔率 1.96 · 仅作测试记录</span>
+            </div>
+            <div class="bankroll-layout">
+              <div class="bankroll-setup">
+                <label>模拟本金
+                  <div class="money-input"><span>¥</span><input id="initial-bankroll" type="number" min="2" step="0.01" inputmode="decimal" placeholder="例如：1000" /></div>
+                </label>
+                <button id="save-bankroll" class="secondary-button" type="button">设置本金</button>
+                <p id="bankroll-message" class="form-message" role="status" aria-live="polite"></p>
+              </div>
+              <div class="bankroll-summary">
+                <article><span>初始本金</span><strong id="initial-balance">未设置</strong></article>
+                <article><span>当前余额</span><strong id="current-balance">—</strong></article>
+                <article><span>累计盈亏</span><strong id="total-profit">—</strong></article>
+                <article><span>测试回报率</span><strong id="return-rate">—</strong></article>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel import-panel" aria-labelledby="import-title">
+            <div class="section-heading">
+              <div><p class="step">批量补录</p><h2 id="import-title">截图识别历史记录</h2></div>
+              <span class="formula-note">图片留在本机 · 首次识别需联网加载 OCR</span>
+            </div>
+            <label id="ocr-dropzone" class="ocr-dropzone">
+              <input id="ocr-files" type="file" accept="image/*" multiple />
+              <strong>把历史截图拖到这里</strong>
+              <span>或点击选择图片；核对后导入当前场次</span>
             </label>
-            <button id="save-bankroll" class="secondary-button" type="button">设置本金</button>
-            <p id="bankroll-message" class="form-message" role="status" aria-live="polite"></p>
-          </div>
-          <div class="bankroll-summary" id="bankroll-summary">
-            <article><span>初始本金</span><strong id="initial-balance">未设置</strong></article>
-            <article><span>当前余额</span><strong id="current-balance">—</strong></article>
-            <article><span>累计盈亏</span><strong id="total-profit">—</strong></article>
-            <article><span>测试回报率</span><strong id="return-rate">—</strong></article>
-          </div>
-        </div>
-        <div class="process-strip" aria-label="测试流程">
-          <span>1 设置模拟本金</span><i>→</i><span>2 录入主播方向和投入</span><i>→</i><span>3 填写官方结果</span><i>→</i><span>4 自动结算并复盘</span>
-        </div>
-      </section>
-
-      <section class="panel input-panel" aria-labelledby="input-title">
-        <div class="section-heading">
-          <div>
-            <p class="step">02 · 逐轮录入</p>
-            <h2 id="input-title">本期结果</h2>
-          </div>
-          <label class="switch-label">
-            <input id="exclude-triples" type="checkbox" checked />
-            <span>三同号不计大小单双</span>
-          </label>
-        </div>
-
-        <div class="entry-grid">
-          <fieldset>
-            <legend>官方三枚骰子 <span>必填</span></legend>
-            <label class="quick-dice-label">快速输入
-              <input id="official-quick" class="quick-dice-input" type="text" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="输入 425 或 4 2 5" />
-            </label>
-            <div class="dice-inputs" data-dice-group="official">
-              <label>骰子 1<input id="official-1" type="number" min="1" max="6" inputmode="numeric" placeholder="1–6" /></label>
-              <label>骰子 2<input id="official-2" type="number" min="1" max="6" inputmode="numeric" placeholder="1–6" /></label>
-              <label>骰子 3<input id="official-3" type="number" min="1" max="6" inputmode="numeric" placeholder="1–6" /></label>
+            <div id="ocr-progress" class="ocr-progress hidden" role="status" aria-live="polite">
+              <div class="bar"><i id="ocr-progress-bar"></i></div><span id="ocr-progress-text">准备识别…</span>
             </div>
-            <div id="official-preview" class="result-preview muted">等待输入完整结果</div>
-          </fieldset>
-
-          <fieldset>
-            <legend>主播结果 <span>任选一种录法</span></legend>
-            <div class="segmented" role="radiogroup" aria-label="主播结果录入方式">
-              <label><input type="radio" name="host-mode" value="category" checked /><span>口播分类</span></label>
-              <label><input type="radio" name="host-mode" value="dice" /><span>三枚骰子</span></label>
+            <div id="ocr-results" class="ocr-results hidden">
+              <div class="ocr-result-heading">
+                <div><strong id="ocr-summary">识别到 0 条候选记录</strong><span>请先核对、修改，再导入。</span></div>
+                <div class="toolbar"><button id="import-ocr-records" class="primary-button" type="button">导入所选记录</button><button id="clear-ocr-results" class="secondary-button" type="button">取消</button></div>
+              </div>
+              <div id="ocr-candidates" class="ocr-candidates"></div>
+              <details class="ocr-raw-details"><summary>查看 OCR 原始文本</summary><pre id="ocr-raw-text"></pre></details>
             </div>
+            <p id="ocr-message" class="form-message" role="status" aria-live="polite"></p>
+          </section>
 
-            <div id="host-category-fields" class="category-fields">
-              <label>大小
-                <select id="host-size">
-                  <option value="">未说</option>
-                  <option value="big">大</option>
-                  <option value="small">小</option>
-                  <option value="triple">三同号</option>
-                </select>
-              </label>
-              <label>单双
-                <select id="host-parity">
-                  <option value="">未说</option>
-                  <option value="odd">单</option>
-                  <option value="even">双</option>
-                  <option value="triple">三同号</option>
-                </select>
-              </label>
+          <section class="dashboard-grid">
+            <article class="panel" aria-labelledby="history-title">
+              <div class="section-heading compact"><div><p class="step">本场统计</p><h2 id="history-title">历史样本</h2></div><strong id="sample-count" class="sample-count">0 期</strong></div>
+              <div id="history-stats" class="history-stats empty-state">录入后显示大小与单双频率。</div>
+            </article>
+            <article class="panel" aria-labelledby="validation-title">
+              <div class="section-heading compact"><div><p class="step">模型质量</p><h2 id="validation-title">滚动检验</h2></div></div>
+              <ul id="validation-list" class="advice-list"></ul>
+            </article>
+          </section>
+
+          <section class="panel records-panel" aria-labelledby="records-title">
+            <div class="section-heading">
+              <div><p class="step">全部数据</p><h2 id="records-title">结果与资金流水</h2></div>
+              <div class="toolbar"><button id="export-data" class="secondary-button" type="button">导出 CSV</button><button id="clear-data" class="danger-button" type="button">清空记录</button></div>
             </div>
-
-            <div id="host-dice-fields" class="dice-inputs hidden" data-dice-group="host">
-              <label>骰子 1<input id="host-1" type="number" min="1" max="6" inputmode="numeric" placeholder="1–6" /></label>
-              <label>骰子 2<input id="host-2" type="number" min="1" max="6" inputmode="numeric" placeholder="1–6" /></label>
-              <label>骰子 3<input id="host-3" type="number" min="1" max="6" inputmode="numeric" placeholder="1–6" /></label>
+            <div class="table-wrap">
+              <table><thead><tr><th>时间</th><th>开奖结果</th><th>录入前模型</th><th>金额测试</th><th>结余</th><th aria-label="操作"></th></tr></thead><tbody id="records-body"></tbody></table>
             </div>
-            <div id="host-preview" class="result-preview muted">等待主播结果</div>
-          </fieldset>
-        </div>
-
-        <fieldset class="simulation-fields">
-          <legend>本轮金额测试 <span>选填；投入最低 2 元</span></legend>
-          <div class="simulation-grid">
-            <label>模拟项
-              <select id="bet-dimension">
-                <option value="none">本轮不做金额测试</option>
-                <option value="size">跟随主播大小</option>
-                <option value="parity">跟随主播单双</option>
-              </select>
-            </label>
-            <label>本轮投入
-              <div class="money-input"><span>¥</span><input id="stake" type="number" min="2" step="0.01" inputmode="decimal" placeholder="最低 2 元" disabled /></div>
-            </label>
-            <div class="settlement-rule"><span>结算规则</span><strong>赢 +0.96×投入 · 输 −1×投入</strong></div>
-          </div>
-          <p id="stake-hint" class="fine-print">选择模拟项后填写金额；投入不能超过当前模拟余额。</p>
-        </fieldset>
-
-        <div class="form-footer">
-          <label class="issue-field">期号或备注（选填）<input id="issue" type="text" maxlength="30" placeholder="例如：第 042 期" /></label>
-          <button id="add-record" class="primary-button" type="button">验证并保存</button>
-        </div>
-        <p id="form-message" class="form-message" role="status" aria-live="polite"></p>
-      </section>
-
-      <section class="panel import-panel" aria-labelledby="import-title">
-        <div class="section-heading">
-          <div>
-            <p class="step">03 · 批量补录</p>
-            <h2 id="import-title">截图识别历史记录</h2>
-          </div>
-          <span class="formula-note">图片留在本机 · 首次识别需联网加载 OCR</span>
-        </div>
-        <label id="ocr-dropzone" class="ocr-dropzone">
-          <input id="ocr-files" type="file" accept="image/*" multiple />
-          <strong>把历史截图拖到这里</strong>
-          <span>或点击选择图片；支持一次选择多张数字型截图</span>
-        </label>
-        <div id="ocr-progress" class="ocr-progress hidden" role="status" aria-live="polite">
-          <div class="bar"><i id="ocr-progress-bar"></i></div>
-          <span id="ocr-progress-text">准备识别…</span>
-        </div>
-        <div id="ocr-results" class="ocr-results hidden">
-          <div class="ocr-result-heading">
-            <div><strong id="ocr-summary">识别到 0 条候选记录</strong><span>请先核对、修改，再导入。</span></div>
-            <div class="toolbar">
-              <button id="import-ocr-records" class="primary-button" type="button">导入所选记录</button>
-              <button id="clear-ocr-results" class="secondary-button" type="button">取消</button>
-            </div>
-          </div>
-          <div id="ocr-candidates" class="ocr-candidates"></div>
-          <details class="ocr-raw-details">
-            <summary>查看 OCR 原始文本</summary>
-            <pre id="ocr-raw-text"></pre>
-          </details>
-        </div>
-        <p id="ocr-message" class="form-message" role="status" aria-live="polite"></p>
-      </section>
-
-      <section class="panel" aria-labelledby="probability-title">
-        <div class="section-heading">
-          <div>
-            <p class="step">04 · 概率</p>
-            <h2 id="probability-title">下一期理论概率</h2>
-          </div>
-          <span class="formula-note">按 216 种等可能组合精确计算</span>
-        </div>
-        <div id="probability-cards" class="probability-grid"></div>
-        <p id="probability-note" class="fine-print"></p>
-      </section>
-
-      <section class="dashboard-grid">
-        <article class="panel" aria-labelledby="history-title">
-          <div class="section-heading compact">
-            <div>
-              <p class="step">05 · 统计</p>
-              <h2 id="history-title">历史样本</h2>
-            </div>
-            <strong id="sample-count" class="sample-count">0 期</strong>
-          </div>
-          <div id="history-stats" class="history-stats empty-state">录入后显示历史频率与核对情况。</div>
-        </article>
-
-        <article class="panel advice-panel" aria-labelledby="advice-title">
-          <div class="section-heading compact">
-            <div>
-              <p class="step">06 · 反馈</p>
-              <h2 id="advice-title">整体反馈</h2>
-            </div>
-          </div>
-          <ul id="advice-list" class="advice-list"></ul>
-        </article>
-      </section>
-
-      <section class="panel records-panel" aria-labelledby="records-title">
-        <div class="section-heading">
-          <div>
-            <p class="step">07 · 明细</p>
-            <h2 id="records-title">验证与资金流水</h2>
-          </div>
-          <div class="toolbar">
-            <button id="export-data" class="secondary-button" type="button">导出 CSV</button>
-            <button id="clear-data" class="danger-button" type="button">清空记录</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>期号 / 时间</th>
-                <th>官方结果</th>
-                <th>主播结果</th>
-                <th>验证</th>
-                <th>金额结算</th>
-                <th>结余</th>
-                <th aria-label="操作"></th>
-              </tr>
-            </thead>
-            <tbody id="records-body"></tbody>
-          </table>
-        </div>
-        <div id="records-empty" class="empty-state">暂无记录。先录入一期开奖结果。</div>
-      </section>
+            <div id="records-empty" class="empty-state">暂无记录。先录入一期开奖结果。</div>
+          </section>
         </div>
       </details>
 
       <section class="notice" aria-label="重要说明">
-        <strong>概率说明</strong>
-        <p>若每期相互独立且骰子公平，历史走势和主播命中率都不会改变下一期理论概率。金额功能是模拟账本，不会推荐下一轮投入，也不构成投注建议。</p>
+        <strong>模型说明</strong>
+        <p>大小与单双分别合计 100%。模型采用 Beta(10,10) 平滑与 20 轮半衰期加权，只是历史参考；若每期独立且公平，历史数据不会提高下一期真实命中率。</p>
       </section>
     </main>
 
-    <dialog id="streamer-dialog">
-      <form method="dialog">
-        <h2>主播档案管理</h2>
-        <p>当前：<strong id="managed-streamer-name">默认主播</strong> · <span id="managed-streamer-count">0 轮</span></p>
-        <div class="streamer-create-row">
-          <label>新主播名称<input id="new-streamer-name" type="text" maxlength="20" autocomplete="off" placeholder="例如：主播A" /></label>
-          <button id="add-streamer" class="primary-button" type="button">添加并切换</button>
-        </div>
-        <p id="streamer-message" class="form-message" role="status" aria-live="polite"></p>
-        <div class="streamer-manage-actions">
-          <button id="start-new-session" class="secondary-button" type="button">开始新场次</button>
-          <button id="reset-streamer" class="secondary-button" type="button">重置当前历史</button>
-          <button id="delete-streamer" class="danger-button" type="button">删除当前主播</button>
-        </div>
-        <div class="dialog-actions">
-          <button value="cancel" class="secondary-button">完成</button>
-        </div>
-      </form>
-    </dialog>
-
     <dialog id="confirm-dialog">
       <form method="dialog">
-        <h2 id="confirm-title">清空全部轮次？</h2>
-        <p id="confirm-text">此操作无法撤销，验证与资金流水会被删除；已设置的模拟本金保留。</p>
-        <div class="dialog-actions">
-          <button value="cancel" class="secondary-button">取消</button>
-          <button id="confirm-submit" value="confirm" class="danger-button">确认清空</button>
-        </div>
+        <h2>清空全部记录？</h2>
+        <p>此操作无法撤销，结果与资金流水都会被删除；已设置的模拟本金保留。</p>
+        <div class="dialog-actions"><button value="cancel" class="secondary-button">取消</button><button value="confirm" class="danger-button">确认清空</button></div>
       </form>
     </dialog>
 
