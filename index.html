@@ -76,6 +76,7 @@
               </div>
 
               <article class="model-pair">
+                <div class="pair-signal"><span>大小信号</span><strong id="signal-size" class="signal-badge">观望</strong></div>
                 <div class="model-pair-values">
                   <div><span>大</span><strong id="prob-big">50.0%</strong></div>
                   <div><span>小</span><strong id="prob-small">50.0%</strong></div>
@@ -84,6 +85,7 @@
               </article>
 
               <article class="model-pair parity-pair">
+                <div class="pair-signal"><span>单双信号</span><strong id="signal-parity" class="signal-badge">观望</strong></div>
                 <div class="model-pair-values">
                   <div><span>单</span><strong id="prob-odd">50.0%</strong></div>
                   <div><span>双</span><strong id="prob-even">50.0%</strong></div>
@@ -186,7 +188,7 @@
 
       <section class="notice" aria-label="重要说明">
         <strong>模型说明</strong>
-        <p>大小与单双分别合计 100%。每 20 轮锁定一次展示模型，段内不切换；旧场次只检验模型能否重复胜出，不直接改变本场概率。若每期独立且公平，历史数据不会提高下一期真实命中率。</p>
+        <p>大小与单双分别合计 100%。系统只在模型通过样本外检验且偏离 50% 足够明显时显示试验信号，其余时间显示观望。若每期独立且公平，历史数据不会提高下一期真实命中率。</p>
       </section>
     </main>
 

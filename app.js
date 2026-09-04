@@ -8,7 +8,10 @@
   const DEFAULT_TITLE = "结果记录台";
   const SESSION_GAP_MS = 30 * 60 * 1000;
   const PRIOR_SIDE = 10;
+  const DICE_PRIOR_FACE = 4;
   const DECAY_HALF_LIFE = 20;
+  const ENSEMBLE_ETA = 2;
+  const SIGNAL_MIN_EDGE = 0.04;
   const ODDS = 1.96;
   const OCR_SCRIPT = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
   const LABELS = { big: "大", small: "小", odd: "单", even: "双" };
@@ -16,7 +19,10 @@
     { key: "baseline", name: "固定 50%" },
     { key: "static", name: "静态贝叶斯" },
     { key: "dynamic", name: "动态贝叶斯" },
+    { key: "diceBias", name: "骰子偏差" },
+    { key: "ensemble", name: "加权组合" },
   ];
+  const BASE_MODEL_KEYS = ["baseline", "static", "dynamic", "diceBias"];
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -45,6 +51,8 @@
     barOdd: $("#bar-odd"),
     modelNote: $("#model-note"),
     modelValidation: $("#model-validation"),
+    signalSize: $("#signal-size"),
+    signalParity: $("#signal-parity"),
     quickHistoryCount: $("#quick-history-count"),
     quickHistoryList: $("#quick-history-list"),
     initialBankroll: $("#initial-bankroll"),
@@ -260,12 +268,79 @@
     };
   }
 
-  function shadowPredictions(items) {
+  function diceBiasModel(items) {
+    const counts = Array.from({ length: 3 }, () => Array(6).fill(0));
+    items.forEach((record) => record.officialDice.forEach((value, position) => {
+      counts[position][Number(value) - 1] += 1;
+    }));
+    const probabilities = counts.map((positionCounts) => {
+      const total = positionCounts.reduce((sum, count) => sum + count, 0) + DICE_PRIOR_FACE * 6;
+      return positionCounts.map((count) => (count + DICE_PRIOR_FACE) / total);
+    });
+    let big = 0;
+    let small = 0;
+    let odd = 0;
+    let even = 0;
+    for (let first = 1; first <= 6; first += 1) {
+      for (let second = 1; second <= 6; second += 1) {
+        for (let third = 1; third <= 6; third += 1) {
+          const probability = probabilities[0][first - 1] * probabilities[1][second - 1] * probabilities[2][third - 1];
+          const result = classify([first, second, third]);
+          if (result.size === "big") big += probability;
+          if (result.size === "small") small += probability;
+          if (result.parity === "odd") odd += probability;
+          if (result.parity === "even") even += probability;
+        }
+      }
+    }
+    const sizeTotal = big + small;
     return {
+      big: sizeTotal ? big / sizeTotal : 0.5,
+      small: sizeTotal ? small / sizeTotal : 0.5,
+      odd,
+      even,
+    };
+  }
+
+  function predictionAvailable(record, key) {
+    const prediction = record.modelPredictions?.[key];
+    return Number.isFinite(Number(prediction?.big)) && Number.isFinite(Number(prediction?.odd));
+  }
+
+  function ensembleWeights(items, metric) {
+    const field = metric === "size" ? "big" : "odd";
+    const losses = Object.fromEntries(BASE_MODEL_KEYS.map((key) => [key, 0]));
+    items.filter((record) => BASE_MODEL_KEYS.every((key) => predictionAvailable(record, key))).forEach((record) => {
+      const result = classify(record.officialDice);
+      if (metric === "size" && result.triple) return;
+      const actual = metric === "size" ? (result.size === "big" ? 1 : 0) : (result.parity === "odd" ? 1 : 0);
+      BASE_MODEL_KEYS.forEach((key) => {
+        losses[key] += (Number(record.modelPredictions[key][field]) - actual) ** 2;
+      });
+    });
+    const bestLoss = Math.min(...Object.values(losses));
+    const raw = Object.fromEntries(BASE_MODEL_KEYS.map((key) => [key, Math.exp(-ENSEMBLE_ETA * (losses[key] - bestLoss))]));
+    const total = Object.values(raw).reduce((sum, weight) => sum + weight, 0);
+    return Object.fromEntries(BASE_MODEL_KEYS.map((key) => [key, raw[key] / total]));
+  }
+
+  function weightedProbability(predictions, weights, field) {
+    return BASE_MODEL_KEYS.reduce((sum, key) => sum + predictions[key][field] * weights[key], 0);
+  }
+
+  function shadowPredictions(items) {
+    const predictions = {
       baseline: { big: 0.5, small: 0.5, odd: 0.5, even: 0.5 },
       static: bayesModel(items, false),
       dynamic: bayesModel(items, true),
+      diceBias: diceBiasModel(items),
     };
+    const sizeWeights = ensembleWeights(items, "size");
+    const parityWeights = ensembleWeights(items, "parity");
+    const big = weightedProbability(predictions, sizeWeights, "big");
+    const odd = weightedProbability(predictions, parityWeights, "odd");
+    predictions.ensemble = { big, small: 1 - big, odd, even: 1 - odd };
+    return predictions;
   }
 
   function pairPercent(probability) {
@@ -284,10 +359,7 @@
   }
 
   function hasComparablePredictions(record) {
-    return MODEL_DEFINITIONS.every(({ key }) => {
-      const prediction = record.modelPredictions?.[key];
-      return Number.isFinite(Number(prediction?.big)) && Number.isFinite(Number(prediction?.odd));
-    });
+    return MODEL_DEFINITIONS.every(({ key }) => predictionAvailable(record, key));
   }
 
   function evaluateModels(items) {
@@ -336,7 +408,7 @@
   function selectActiveModel(evaluation, metric) {
     if (evaluation.rounds < 20) return "baseline";
     const baseline = evaluation.models.baseline[metric];
-    const candidates = [evaluation.models.static, evaluation.models.dynamic]
+    const candidates = MODEL_DEFINITIONS.filter(({ key }) => key !== "baseline").map(({ key }) => evaluation.models[key])
       .filter((model) => Number.isFinite(model[metric]))
       .sort((first, second) => first[metric] - second[metric]);
     return candidates[0]?.[metric] < baseline ? candidates[0].key : "baseline";
@@ -363,7 +435,7 @@
   }
 
   function bestCandidate(evaluation, metric) {
-    return [evaluation.models.static, evaluation.models.dynamic]
+    return MODEL_DEFINITIONS.filter(({ key }) => key !== "baseline").map(({ key }) => evaluation.models[key])
       .filter((model) => Number.isFinite(model[metric]))
       .sort((first, second) => first[metric] - second[metric])[0]?.key || "static";
   }
@@ -394,8 +466,8 @@
       groups.get(record.sessionId).push(record);
     });
     const wins = {
-      size: { baseline: 0, static: 0, dynamic: 0 },
-      parity: { baseline: 0, static: 0, dynamic: 0 },
+      size: Object.fromEntries(MODEL_DEFINITIONS.map(({ key }) => [key, 0])),
+      parity: Object.fromEntries(MODEL_DEFINITIONS.map(({ key }) => [key, 0])),
     };
     let qualified = 0;
     groups.forEach((items) => {
@@ -407,7 +479,8 @@
     });
     const stable = {};
     ["size", "parity"].forEach((metric) => {
-      const winner = ["static", "dynamic"].sort((first, second) => wins[metric][second] - wins[metric][first])[0];
+      const winner = MODEL_DEFINITIONS.map(({ key }) => key).filter((key) => key !== "baseline")
+        .sort((first, second) => wins[metric][second] - wins[metric][first])[0];
       stable[metric] = qualified >= 3 && wins[metric][winner] >= 3 && wins[metric][winner] / qualified >= 0.6 ? winner : null;
     });
     return { qualified, wins, stable };
@@ -426,6 +499,56 @@
     return { candidate, interval, label };
   }
 
+  function signalState(items, state, crossSession, metric) {
+    const field = metric === "size" ? "big" : "odd";
+    const firstLabel = metric === "size" ? "大" : "单";
+    const secondLabel = metric === "size" ? "小" : "双";
+    const modelKey = state.activeKeys[metric];
+    const probability = Number(state.active[field]);
+    const interval = pairedConfidence(items, modelKey, metric);
+    const direction = probability >= 0.5 ? firstLabel : secondLabel;
+    const stable = crossSession.stable[metric] === modelKey;
+    const issued = modelKey !== "baseline"
+      && interval.count >= 20
+      && interval.lower !== null
+      && interval.lower > 0
+      && Math.abs(probability - 0.5) >= SIGNAL_MIN_EDGE;
+    return {
+      issued,
+      direction: issued ? direction : null,
+      label: issued ? `${direction} · ${stable ? "稳定信号" : "试验信号"}` : "观望",
+      modelKey,
+      probability,
+      edge: Math.abs(probability - 0.5),
+      confidenceLower: interval.lower,
+      confidenceUpper: interval.upper,
+    };
+  }
+
+  function signalMetrics(items, metric) {
+    let eligible = 0;
+    let decisions = 0;
+    let hits = 0;
+    items.forEach((record) => {
+      const saved = record.modelPrediction?.signals?.[metric];
+      if (!saved || typeof saved.issued !== "boolean") return;
+      const result = classify(record.officialDice);
+      if (metric === "size" && result.triple) return;
+      eligible += 1;
+      if (!saved.issued) return;
+      decisions += 1;
+      const actual = metric === "size" ? LABELS[result.size] : LABELS[result.parity];
+      if (saved.direction === actual) hits += 1;
+    });
+    return {
+      eligible,
+      decisions,
+      hits,
+      coverage: eligible ? decisions / eligible : null,
+      hitRate: decisions ? hits / decisions : null,
+    };
+  }
+
   function currentModelState(items) {
     const predictions = shadowPredictions(items);
     const evaluation = evaluateModels(items);
@@ -439,7 +562,12 @@
       odd: parityPrediction.odd,
       even: parityPrediction.even,
     };
-    return { predictions, evaluation, block, activeKeys, active };
+    const crossSession = crossSessionSummary();
+    const signals = {
+      size: signalState(items, { activeKeys, active }, crossSession, "size"),
+      parity: signalState(items, { activeKeys, active }, crossSession, "parity"),
+    };
+    return { predictions, evaluation, block, activeKeys, active, signals, crossSession };
   }
 
   function renderModel() {
@@ -473,10 +601,18 @@
       els.modelNote.textContent = `第 ${state.block.index + 1} 段已分别择优并锁定，不会中途切换`;
     }
 
-    const crossSession = crossSessionSummary();
+    els.signalSize.textContent = state.signals.size.label;
+    els.signalParity.textContent = state.signals.parity.label;
+    els.signalSize.className = state.signals.size.issued ? "signal-badge active" : "signal-badge";
+    els.signalParity.className = state.signals.parity.issued ? "signal-badge active" : "signal-badge";
+
+    const crossSession = state.crossSession;
     const sizeConfidence = confidenceState(items, state.evaluation, crossSession, "size");
     const parityConfidence = confidenceState(items, state.evaluation, crossSession, "parity");
     els.modelValidation.textContent = `大小${sizeConfidence.label} · 单双${parityConfidence.label}`;
+    const issued = [["大小", state.signals.size], ["单双", state.signals.parity]].filter(([, signal]) => signal.issued);
+    if (!issued.length) els.modelNote.textContent = "当前无有效信号，继续记录";
+    else els.modelNote.textContent = issued.map(([metric, signal]) => `${metric}${signal.label}`).join(" · ");
   }
 
   function roundMoney(value) {
@@ -569,6 +705,7 @@
         even: frozenPredictions[state.activeKeys.parity].even,
         basedOn: before.length,
         modelKeys: state.activeKeys,
+        signals: state.signals,
       },
       bet: betResult.bet,
       excludeTriples: true,
@@ -669,9 +806,11 @@
   function renderValidation() {
     const items = sessionRecords();
     const state = currentModelState(items);
-    const crossSession = crossSessionSummary();
+    const crossSession = state.crossSession;
     const sizeConfidence = confidenceState(items, state.evaluation, crossSession, "size");
     const parityConfidence = confidenceState(items, state.evaluation, crossSession, "parity");
+    const sizeSignals = signalMetrics(items, "size");
+    const paritySignals = signalMetrics(items, "parity");
     const ranked = [...MODEL_DEFINITIONS]
       .map((definition) => ({ ...definition, ...state.evaluation.models[definition.key] }))
       .sort((first, second) => {
@@ -696,11 +835,17 @@
     els.modelConfidenceDetails.innerHTML = [
       { metric: "大小", confidence: sizeConfidence },
       { metric: "单双", confidence: parityConfidence },
-    ].map(({ metric, confidence }) => `<article>
+    ].map(({ metric, confidence }) => {
+      const metrics = metric === "大小" ? sizeSignals : paritySignals;
+      const coverage = metrics.coverage === null ? "—" : `${(metrics.coverage * 100).toFixed(1)}%`;
+      const hitRate = metrics.hitRate === null ? "—" : `${(metrics.hitRate * 100).toFixed(1)}%`;
+      return `<article>
       <div><span>${metric}可信度</span><strong>${confidence.label}</strong></div>
       <p>${escapeHtml(modelName(confidence.candidate))} 对比固定 50%</p>
       <small>${confidence.interval.lower === null ? `有效样本 ${confidence.interval.count}/20` : `近似 95% Brier 差值区间 ${signedScore(confidence.interval.lower)} ～ ${signedScore(confidence.interval.upper)}`}</small>
-    </article>`).join("");
+      <small>信号覆盖 ${coverage} · 输出 ${metrics.decisions}/${metrics.eligible} · 命中 ${hitRate}</small>
+    </article>`;
+    }).join("");
 
     const stabilityText = (metric, label) => {
       const stableKey = crossSession.stable[metric];
@@ -710,9 +855,9 @@
     };
     els.crossSessionStability.innerHTML = `<div class="stability-heading"><span>跨场稳定性</span><strong>${crossSession.qualified} 个合格场次</strong></div><div class="stability-grid">${stabilityText("size", "大小")}${stabilityText("parity", "单双")}</div>`;
 
-    const tips = ["每个验证段固定 20 轮，段内展示模型不会切换；三套影子模型仍持续同步评分。"];
+    const tips = ["每个验证段固定 20 轮，段内展示模型不会切换；五套影子模型持续同步评分。"];
     const legacyCount = items.length - state.evaluation.rounds;
-    if (legacyCount > 0) tips.push(`本场有 ${legacyCount} 条旧版或截图记录用于计算概率，但不参与三模型公平排名。`);
+    if (legacyCount > 0) tips.push(`本场有 ${legacyCount} 条旧版或截图记录用于计算概率，但不参与五模型公平排名。`);
     if (state.block.index === 0) {
       tips.push(`首段进度 ${state.block.position}/20；固定使用 50% 基准。`);
     } else {
@@ -901,7 +1046,7 @@
       return;
     }
     const balances = balanceAfterEachRecord();
-    const rows = [["期号/备注", "时间", "场次", "骰子", "和值", "大小", "单双", "当时展示模型", "固定50%预测", "静态贝叶斯预测", "动态贝叶斯预测", "模拟方向", "投入", "赔率", "返还", "净盈亏", "轮后余额", "来源"]];
+    const rows = [["期号/备注", "时间", "场次", "骰子", "和值", "大小", "单双", "当时展示模型", "固定50%预测", "静态贝叶斯预测", "动态贝叶斯预测", "骰子偏差预测", "加权组合预测", "大小信号", "单双信号", "模拟方向", "投入", "赔率", "返还", "净盈亏", "轮后余额", "来源"]];
     records.forEach((record) => {
       const result = classify(record.officialDice);
       rows.push([
@@ -916,6 +1061,10 @@
         record.modelPredictions ? predictionText(record.modelPredictions.baseline) : "",
         record.modelPredictions ? predictionText(record.modelPredictions.static) : "",
         record.modelPredictions ? predictionText(record.modelPredictions.dynamic) : "",
+        record.modelPredictions?.diceBias ? predictionText(record.modelPredictions.diceBias) : "",
+        record.modelPredictions?.ensemble ? predictionText(record.modelPredictions.ensemble) : "",
+        record.modelPrediction?.signals?.size?.label || "",
+        record.modelPrediction?.signals?.parity?.label || "",
         record.bet ? LABELS[record.bet.selection] || record.bet.selection : "",
         record.bet?.stake ?? "",
         record.bet?.odds ?? "",

@@ -102,6 +102,10 @@ main { display: grid; gap: 14px; padding-bottom: 40px; }
 .model-board-heading strong { display: block; margin-top: 3px; font-size: 1.08rem; }
 .model-board-heading > span { padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; white-space: nowrap; }
 .model-pair { padding: 13px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.pair-signal { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.pair-signal > span { color: var(--muted); font-size: 0.7rem; }
+.signal-badge { padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 0.68rem; white-space: nowrap; }
+.signal-badge.active { border-color: rgba(94, 234, 212, 0.42); background: rgba(94, 234, 212, 0.09); color: var(--accent); }
 .model-pair-values { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .model-pair-values > div:last-child { text-align: right; }
 .model-pair-values span { color: var(--muted); font-size: 0.78rem; }
