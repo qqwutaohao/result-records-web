@@ -1,33 +1,49 @@
 (() => {
   "use strict";
 
-  if (!globalThis.K3ModelCore) {
+  if (!globalThis.K3ModelCore || !globalThis.K3LiveModel) {
     if (globalThis.__K3_MODEL_BOOTSTRAPPING__) throw new Error("模型核心未加载。");
     globalThis.__K3_MODEL_BOOTSTRAPPING__ = true;
     if (document.readyState === "loading") {
-      document.write('<script src="model-core.js?v=4"><\/script><script src="app.js?v=4"><\/script>');
+      document.write('<script src="model-core.js?v=5"><\/script><script src="live-model.js?v=5"><\/script><script src="app.js?v=5"><\/script>');
     } else {
       const coreScript = document.createElement("script");
-      coreScript.src = "model-core.js?v=4";
+      coreScript.src = "model-core.js?v=5";
       coreScript.onload = () => {
-        const appScript = document.createElement("script");
-        appScript.src = "app.js?v=4";
-        document.head.append(appScript);
+        const liveScript = document.createElement("script");
+        liveScript.src = "live-model.js?v=5";
+        liveScript.onload = () => {
+          const appScript = document.createElement("script");
+          appScript.src = "app.js?v=5";
+          document.head.append(appScript);
+        };
+        document.head.append(liveScript);
       };
       document.head.append(coreScript);
     }
     return;
   }
   const ModelCore = globalThis.K3ModelCore;
+  const LiveModel = globalThis.K3LiveModel;
+  if (!document.querySelector("#lock-forecast")) {
+    const updated = new URL(location.href);
+    if (updated.searchParams.get("ui") !== "5") {
+      updated.searchParams.set("ui", "5");
+      location.replace(updated.href);
+    } else document.body.textContent = "页面仍为旧缓存，请刷新后重试。";
+    return;
+  }
 
   const LEGACY_STORAGE_KEY = "k3-verifier-records-v1";
   const LEGACY_BANKROLL_KEY = "k3-verifier-bankroll-v1";
   const LEGACY_SESSION_KEY = "k3-verifier-model-session-v1";
-  const STORAGE_KEY = "k3-verifier-records-v4";
-  const BANKROLL_KEY = "k3-verifier-bankroll-v4";
+  const STORAGE_KEY = "k3-verifier-records-v5";
+  const BANKROLL_KEY = "k3-verifier-bankroll-v5";
   const TITLE_KEY = "k3-verifier-title-v1";
-  const SESSION_KEY = "k3-verifier-model-session-v4";
-  const INVALIDATED_SESSIONS_KEY = "k3-verifier-invalidated-sessions-v4";
+  const SESSION_KEY = "k3-verifier-model-session-v5";
+  const INVALIDATED_SESSIONS_KEY = "k3-verifier-invalidated-sessions-v5";
+  const LEDGER_KEY = "k3-verifier-forecast-ledger-v5";
+  const STREAMERS_KEY = "k3-verifier-streamers-v5";
   const WRITE_LOCK_KEY = "k3-verifier-write-lock-v1";
   const WRITE_LOCK_NAME = "k3-verifier-data-write";
   const DEFAULT_TITLE = "结果记录台";
@@ -63,7 +79,7 @@
   ];
   const BASE_MODEL_KEYS = ["baseline", "static", "dynamic", "diceBias", "pooledBias"];
   const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const tabChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("k3-verifier-tabs-v4") : null;
+  const tabChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("k3-verifier-tabs-v5") : null;
   const pendingTabProbes = new Map();
 
   if (tabChannel) {
@@ -95,6 +111,17 @@
     quickStakeHint: $("#quick-stake-hint"),
     saveResult: $("#save-result"),
     quickMessage: $("#quick-message"),
+    lockForecast: $("#lock-forecast"),
+    skipForecast: $("#skip-forecast"),
+    pendingStatus: $("#pending-status"),
+    preRoundOptions: $("#pre-round-options"),
+    streamerInputs: $("#streamer-inputs"),
+    addStreamer: $("#add-streamer"),
+    participationMode: $("#participation-mode"),
+    sizeReason: $("#size-reason"),
+    parityReason: $("#parity-reason"),
+    actualProbabilities: $("#actual-probabilities"),
+    lastFeedback: $("#last-feedback"),
     modelConfidence: $("#model-confidence"),
     modelSample: $("#model-sample"),
     probBig: $("#prob-big"),
@@ -145,11 +172,13 @@
   let records = loadRecords();
   let bankroll = loadBankroll();
   let session = loadSession();
+  let forecastLedger = loadArray(LEDGER_KEY);
   let ocrCandidates = [];
   let ocrRawSections = [];
   let ocrLibraryPromise = null;
   let savingResult = false;
   let storageSyncTimer = null;
+  let renderedPendingId = null;
 
   if (bankroll) els.initialBankroll.value = bankroll.initial;
   applyTitle(localStorage.getItem(TITLE_KEY) || DEFAULT_TITLE);
@@ -206,7 +235,7 @@
 
   function loadRecords() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY) ?? "[]";
+      const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("k3-verifier-records-v4") ?? localStorage.getItem(LEGACY_STORAGE_KEY) ?? "[]";
       const saved = JSON.parse(raw);
       return Array.isArray(saved) ? saved.filter((record) => validDice(record.officialDice)) : [];
     } catch {
@@ -216,7 +245,7 @@
 
   function loadInvalidatedSessions() {
     try {
-      const saved = JSON.parse(localStorage.getItem(INVALIDATED_SESSIONS_KEY) || "[]");
+      const saved = JSON.parse(localStorage.getItem(INVALIDATED_SESSIONS_KEY) ?? localStorage.getItem("k3-verifier-invalidated-sessions-v4") ?? "[]");
       return new Set(Array.isArray(saved) ? saved.filter((value) => typeof value === "string") : []);
     } catch {
       return new Set();
@@ -233,7 +262,7 @@
 
   function loadBankroll() {
     try {
-      const raw = localStorage.getItem(BANKROLL_KEY) ?? localStorage.getItem(LEGACY_BANKROLL_KEY) ?? "null";
+      const raw = localStorage.getItem(BANKROLL_KEY) ?? localStorage.getItem("k3-verifier-bankroll-v4") ?? localStorage.getItem(LEGACY_BANKROLL_KEY) ?? "null";
       const saved = JSON.parse(raw);
       return saved && Number.isFinite(saved.initial) && saved.initial >= 2 ? saved : null;
     } catch {
@@ -306,6 +335,7 @@
     records = loadRecords();
     bankroll = loadBankroll();
     session = loadSession();
+    forecastLedger = loadArray(LEDGER_KEY);
     ensureSession();
   }
 
@@ -342,7 +372,7 @@
 
   function loadSession() {
     try {
-      const raw = localStorage.getItem(SESSION_KEY) ?? localStorage.getItem(LEGACY_SESSION_KEY) ?? "null";
+      const raw = localStorage.getItem(SESSION_KEY) ?? localStorage.getItem("k3-verifier-model-session-v4") ?? localStorage.getItem(LEGACY_SESSION_KEY) ?? "null";
       const saved = JSON.parse(raw);
       if (saved?.id && sessionIsActive(saved.lastActiveAt)) {
         return normalizeSessionProtocol(saved);
@@ -1048,51 +1078,228 @@
     return { predictions, evaluation, block, activeKeys, active, signals, crossSession, changes };
   }
 
+  function loadArray(key) {
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(value) ? value : [];
+    } catch { return []; }
+  }
+
+  function pendingForecast() {
+    return forecastLedger.find((entry) => entry.status === "locked" && !invalidatedSessions.has(entry.sessionId)
+      && !records.some((record) => record.forecast?.id === entry.id)) || null;
+  }
+
+  function inputFingerprint() {
+    return records.map((record) => record.id + ":" + record.officialDice.join("")).join("|");
+  }
+
+  function ensureV5Storage() {
+    if (localStorage.getItem(STORAGE_KEY) !== null) return;
+    saveBankrollState();
+    saveInvalidatedSessions();
+    touchSession();
+    saveRecords();
+  }
+
+  function readStreamers() {
+    return [...els.streamerInputs.querySelectorAll(".streamer-row")].map((row) => ({
+      name: row.querySelector("[data-streamer-name]").value.trim(),
+      size: row.querySelector("[data-streamer-size]").value,
+      parity: row.querySelector("[data-streamer-parity]").value,
+    })).filter((entry) => entry.name);
+  }
+
+  function renderStreamers(entries) {
+    els.streamerInputs.innerHTML = entries.slice(0, 2).map((entry) => {
+      const options = (values, chosen) => values.map(([value, label]) => '<option value="' + value + '"' + (chosen === value ? " selected" : "") + ">" + label + "</option>").join("");
+      return '<div class="streamer-row"><input data-streamer-name aria-label="主播名称" maxlength="24" placeholder="主播名称" value="' + escapeHtml(entry.name || "") + '" />'
+        + '<select data-streamer-size aria-label="主播大小判断">' + options([["none", "大小观望"], ["big", "大"], ["small", "小"]], entry.size || "none") + "</select>"
+        + '<select data-streamer-parity aria-label="主播单双判断">' + options([["none", "单双观望"], ["odd", "单"], ["even", "双"]], entry.parity || "none") + "</select>"
+        + '<button type="button" class="text-button" data-remove-streamer aria-label="移除主播">移除</button></div>';
+    }).join("");
+    els.addStreamer.disabled = entries.length >= 2 || Boolean(pendingForecast());
+  }
+
+  function buildLegacyFields(items) {
+    const state = currentModelState(items);
+    const predictions = Object.fromEntries(Object.entries(state.predictions).map(([key, value]) => [key, { ...value, basedOn: items.length }]));
+    return {
+      modelProtocolVersion: MODEL_PROTOCOL_VERSION,
+      modelBlock: {
+        protocolVersion: MODEL_PROTOCOL_VERSION, id: state.block.id, round: state.block.round,
+        index: state.block.index, position: state.block.position,
+        role: state.block.index === 0 ? "selection" : "validation",
+        lockedModelKeys: { ...state.activeKeys },
+      },
+      modelPredictions: predictions,
+      modelPrediction: { ...state.active, basedOn: items.length, modelKeys: state.activeKeys, signals: state.signals },
+    };
+  }
+
+  function readParticipation() {
+    const mode = els.participationMode.value;
+    const selection = mode === "observe" ? "none" : els.quickBetSelection.value;
+    const stake = els.quickStake.value === "" || mode === "observe" ? null : roundMoney(Number(els.quickStake.value));
+    if (mode !== "observe" && selection === "none") throw new Error("请先选择本轮方向，或将参与方式设为观望。");
+    if (stake !== null && (!Number.isFinite(stake) || stake < 2)) throw new Error("填写金额时最低为 2 元。");
+    if (mode === "simulate" && stake !== null && (!bankroll || stake > currentBalance())) throw new Error("请先设置足够的模拟本金，或留空金额只验证方向。");
+    return { mode, selection, stake };
+  }
+
+  function hasSequenceGap(latest) {
+    return Boolean(latest && forecastLedger.some((entry) => entry.status === "missed"
+      && entry.sessionId === latest.sessionId && Date.parse(entry.missedAt) >= Date.parse(latest.createdAt)));
+  }
+
+  function liveItems(items = records) {
+    return items.map((record, index) => ({ ...record,
+      evidenceInvalidated: record.evidenceInvalidated === true || invalidatedSessions.has(record.sessionId),
+      nextIsUnknown: index === 0 && hasSequenceGap(record),
+    }));
+  }
+
+  async function lockNextForecast() {
+    try {
+      await withStorageWriteLock(() => {
+        syncStoredState();
+        if (pendingForecast()) throw new Error("已有待开奖预判，请先记录结果或跳过该期。");
+        if (els.quickResult.value.trim()) throw new Error("请先记录输入框中的开奖结果，再锁定下一期。");
+        const issue = els.quickIssue.value.trim();
+        if (!issue) throw new Error("请填写待开奖期号，确保主播判断与结果属于同一期。");
+        if (records.some((record) => record.issue === issue)) throw new Error("该期号已有记录，请使用含日期的完整期号。");
+        if (forecastLedger.some((entry) => entry.issue === issue)) throw new Error("该期号已有锁定或跳过记录，请勿重复验证。");
+        const unnamed = [...els.streamerInputs.querySelectorAll(".streamer-row")].some((row) => (
+          !row.querySelector("[data-streamer-name]").value.trim()
+          && [row.querySelector("[data-streamer-size]"), row.querySelector("[data-streamer-parity]")].some((input) => input.value !== "none")
+        ));
+        if (unnamed) throw new Error("请给已有判断的主播填写名称。");
+        const streamers = readStreamers();
+        if (new Set(streamers.map((entry) => entry.name)).size !== streamers.length) throw new Error("主播名称不能重复。");
+        const participation = readParticipation();
+        const items = sessionRecords();
+        const legacyFields = buildLegacyFields(items);
+        const forecast = LiveModel.forecast(liveItems(items), streamers, legacyFields.modelPrediction);
+        const lockedAt = new Date().toISOString();
+        const entry = {
+          ...forecast, id: "forecast-" + Date.now() + "-" + Math.random().toString(16).slice(2),
+          status: "locked", issue, sessionId: session.id, lockedAt,
+          fingerprint: inputFingerprint(), streamers, participation, legacyFields,
+        };
+        ensureV5Storage();
+        touchSession();
+        localStorage.setItem(STREAMERS_KEY, JSON.stringify(streamers.map((value) => ({ name: value.name }))));
+        const updated = [entry, ...forecastLedger];
+        localStorage.setItem(LEDGER_KEY, JSON.stringify(updated));
+        forecastLedger = updated;
+        renderAll();
+        els.preRoundOptions.open = false;
+        els.quickMessage.className = "form-message success";
+        els.quickMessage.textContent = "第 " + issue + " 期已锁定。开奖后输入三个数字即可验证。";
+        els.quickResult.focus();
+      });
+    } catch (error) {
+      els.quickMessage.className = "form-message";
+      els.quickMessage.textContent = error.message || "锁定失败，请重试。";
+    }
+  }
+
+  async function skipPendingForecast() {
+    try {
+      await withStorageWriteLock(() => {
+        syncStoredState();
+        const pending = pendingForecast();
+        if (!pending) return;
+        const updated = forecastLedger.map((entry) => entry.id === pending.id ? { ...entry, status: "missed", missedAt: new Date().toISOString() } : entry);
+        localStorage.setItem(LEDGER_KEY, JSON.stringify(updated));
+        forecastLedger = updated;
+        els.quickIssue.value = "";
+        renderStreamers(loadArray(STREAMERS_KEY));
+        renderAll();
+        els.quickMessage.className = "form-message";
+        els.quickMessage.textContent = "已保留本期未录到的记录；漏期不会伪装成完整验证。";
+      });
+    } catch (error) { els.quickMessage.textContent = error.message || "操作失败，请重试。"; }
+  }
+
   function renderModel() {
     const items = sessionRecords();
-    const state = currentModelState(items);
-    const model = state.active;
-    const size = pairPercent(model.big);
-    const parity = pairPercent(model.odd);
-
-    const bothBaseline = state.activeKeys.size === "baseline" && state.activeKeys.parity === "baseline";
-    const sameModel = state.activeKeys.size === state.activeKeys.parity;
-    els.sessionStatus.textContent = `第 ${state.block.index + 1} 段 · ${state.block.position}/${VALIDATION_BLOCK_SIZE}`;
-    els.modelConfidence.textContent = state.block.index === 0
-      ? "固定 50% · 首段锁定"
-      : sameModel
-        ? `${modelName(state.activeKeys.size)} · ${bothBaseline ? "自动降级" : state.evaluation.rounds < 100 ? "实验领先" : "当前最优"}`
-        : `大小 ${modelName(state.activeKeys.size)} · 单双 ${modelName(state.activeKeys.parity)}`;
-    const warmHistory = historicalPriorItems(items).length > 0;
-    els.modelSample.textContent = `本场 ${items.length} 轮 · ${warmHistory ? "历史折算 5 轮" : "无历史预热"}`;
-    els.probBig.textContent = `${size[0].toFixed(1)}%`;
-    els.probSmall.textContent = `${size[1].toFixed(1)}%`;
-    els.probOdd.textContent = `${parity[0].toFixed(1)}%`;
-    els.probEven.textContent = `${parity[1].toFixed(1)}%`;
-    els.barBig.style.width = `${size[0]}%`;
-    els.barOdd.style.width = `${parity[0]}%`;
-
-    if (state.block.index === 0) {
-      els.modelNote.textContent = `首段固定使用 50% 基准，还需 ${VALIDATION_BLOCK_SIZE - state.block.position} 轮完成`;
-    } else if (bothBaseline) {
-      els.modelNote.textContent = `第 ${state.block.index + 1} 段已锁定 50% 基准，不会中途切换`;
-    } else {
-      els.modelNote.textContent = `第 ${state.block.index + 1} 段已分别择优并锁定，不会中途切换`;
+    const pending = pendingForecast();
+    if (pending && renderedPendingId !== pending.id) {
+      renderStreamers(pending.streamers);
+      els.participationMode.value = pending.participation.mode;
+      els.quickBetSelection.value = pending.participation.selection;
+      els.quickStake.value = pending.participation.stake ?? "";
+      renderedPendingId = pending.id;
+    } else if (!pending && renderedPendingId) {
+      renderStreamers(loadArray(STREAMERS_KEY));
+      els.quickIssue.value = "";
+      els.participationMode.value = "observe";
+      els.quickBetSelection.value = "none";
+      els.quickStake.value = "";
+      renderedPendingId = null;
     }
-
-    els.signalSize.textContent = `${state.signals.size.label} · 实际 ${(state.signals.size.probability * 100).toFixed(1)}%`;
-    els.signalParity.textContent = `${state.signals.parity.label} · 实际 ${(state.signals.parity.probability * 100).toFixed(1)}%`;
-    els.signalSize.className = state.signals.size.issued ? "signal-badge active" : "signal-badge";
-    els.signalParity.className = state.signals.parity.issued ? "signal-badge active" : "signal-badge";
-
-    const sizeConfidence = confidenceState(items, "size");
-    const parityConfidence = confidenceState(items, "parity");
-    els.modelValidation.textContent = `大小${sizeConfidence.label} · 单双${parityConfidence.label}`;
-    const issued = [["大小", state.signals.size], ["单双", state.signals.parity]].filter(([, signal]) => signal.issued);
-    const changing = [["大小", state.changes.size], ["单双", state.changes.parity]].filter(([, change]) => change.active).map(([metric]) => metric);
-    if (changing.length) els.modelNote.textContent = `${changing.join("、")}分布变化，暂停信号`;
-    else if (!issued.length) els.modelNote.textContent = `当前观望 · 赔率盈亏线 ${(BREAK_EVEN_PROBABILITY * 100).toFixed(1)}%`;
-    else els.modelNote.textContent = `${issued.map(([metric, signal]) => `${metric}${signal.label}`).join(" · ")} · 盈亏线 ${(BREAK_EVEN_PROBABILITY * 100).toFixed(1)}%`;
+    const forecast = pending || LiveModel.forecast(liveItems(items), readStreamers());
+    const model = forecast.candidates.live;
+    const size = pairPercent(model.big), parity = pairPercent(model.odd);
+    const evalCurrent = LiveModel.evaluate(liveItems(items));
+    els.sessionStatus.textContent = "本场 " + items.length + " 轮";
+    els.modelSample.textContent = "提前验证 " + evalCurrent.count + " 轮";
+    els.modelConfidence.textContent = pending ? "第 " + pending.issue + " 期 · 已锁定" : items.length < 10 ? "再记 " + (10 - items.length) + " 轮，开始方向参考" : "随每轮结果更新";
+    els.probBig.textContent = size[0].toFixed(1) + "%";
+    els.probSmall.textContent = size[1].toFixed(1) + "%";
+    els.probOdd.textContent = parity[0].toFixed(1) + "%";
+    els.probEven.textContent = parity[1].toFixed(1) + "%";
+    els.barBig.style.width = size[0] + "%";
+    els.barOdd.style.width = parity[0] + "%";
+    const statusLabels = { warmup: "准备中", balanced: "接近均衡", changing: "变化中 · 观望", conflict: "分歧较大 · 观望" };
+    for (const [metric, badge, note] of [["size", els.signalSize, els.sizeReason], ["parity", els.signalParity, els.parityReason]]) {
+      const decision = forecast.decisions[metric];
+      badge.textContent = decision.issued ? "参考偏" + LABELS[decision.direction] : statusLabels[decision.status];
+      badge.className = decision.issued ? "signal-badge active" : "signal-badge";
+      note.textContent = decision.reason;
+      badge.closest(".model-pair").querySelectorAll(".model-pair-values > div").forEach((cell, index) => {
+        const selected = metric === "size" ? ["big", "small"][index] : ["odd", "even"][index];
+        cell.classList.toggle("favored", decision.direction === selected);
+      });
+    }
+    const active = ["size", "parity"].filter((metric) => forecast.decisions[metric].issued);
+    els.modelNote.textContent = active.length
+      ? active.map((metric) => (metric === "size" ? "大小" : "单双") + "偏" + LABELS[forecast.decisions[metric].direction]).join(" · ") + "。仅作参考，尚未证明有优势。"
+      : items.length < 10 ? "记录可立即开始；满 10 轮显示方向参考。" : "本轮暂无清晰方向，下一轮重新评估。";
+    els.modelValidation.textContent = evalCurrent.count ? "本场已验证 " + evalCurrent.count + " 轮" : "补录不计提前验证";
+    const actual = ModelCore.sizeClassProbabilities(model);
+    els.actualProbabilities.textContent = "含三同号后的模型估计：大 " + (actual.big * 100).toFixed(1) + "%，小 " + (actual.small * 100).toFixed(1) + "%，三同号 " + (actual.triple * 100).toFixed(1) + "%。上方大小是排除三同号后的相对比例。";
+    els.pendingStatus.textContent = pending
+      ? "已于 " + new Date(pending.lockedAt).toLocaleTimeString("zh-CN", { hour12: false }) + " 锁定；期号、主播和选择均不可事后修改。"
+      : "开奖前锁定才计入验证；也可直接输入结果作补录。";
+    els.lockForecast.disabled = Boolean(pending) || savingResult || Boolean(els.quickResult.value.trim());
+    els.skipForecast.classList.toggle("hidden", !pending);
+    els.quickIssue.disabled = Boolean(pending);
+    if (pending) els.quickIssue.value = pending.issue;
+    els.preRoundOptions.querySelectorAll("input, select, button").forEach((input) => { input.disabled = Boolean(pending); });
+    els.addStreamer.disabled = Boolean(pending) || els.streamerInputs.children.length >= 2;
+    if (!pending) {
+      const enabled = els.participationMode.value !== "observe";
+      els.quickBetSelection.disabled = !enabled;
+      els.quickStake.disabled = !enabled || els.quickBetSelection.value === "none";
+    }
+    els.quickStakeHint.textContent = els.participationMode.value === "actual"
+      ? "只记录实际选择，不影响模拟本金；本页面不执行投注。"
+      : els.participationMode.value === "simulate"
+        ? (bankroll ? "模拟余额 " + formatMoney(currentBalance()) + "。" : "填金额前请在验证与记录中设置模拟本金。") + "金额也可留空，只验证方向。"
+        : "实际与模拟分别统计；本页面不执行投注。";
+    const latest = records[0];
+    if (!latest) els.lastFeedback.textContent = "录入结果后，在这里查看上一期反馈。";
+    else if (!LiveModel.isEvaluable(liveItems([latest])[0])) els.lastFeedback.textContent = resultLabel(classify(latest.officialDice)) + " · 补录或失效记录，不计提前验证";
+    else {
+      const actualResult = classify(latest.officialDice);
+      const feedback = ["size", "parity"].map((metric) => {
+        const direction = latest.forecast.decisions[metric].direction;
+        return (metric === "size" ? "大小" : "单双") + (direction ? actualResult[metric] === direction ? "命中" : "未命中" : "观望");
+      });
+      els.lastFeedback.textContent = "上期 " + latest.issue + "：" + feedback.join(" · ");
+    }
   }
 
   function roundMoney(value) {
@@ -1136,116 +1343,82 @@
     return balances;
   }
 
-  function betForResult(result) {
-    const selection = els.quickBetSelection.value;
-    if (selection === "none") return { bet: null };
-    if (!bankroll) return { error: "请先在“更多工具”里设置模拟本金。" };
-    const stake = roundMoney(Number(els.quickStake.value));
-    if (!Number.isFinite(stake) || stake < 2) return { error: "本轮投入最低为 2 元。" };
-    if (stake > currentBalance()) return { error: `本轮投入不能超过当前模拟余额 ${formatMoney(currentBalance())}。` };
+  function betForResult(result, participation) {
+    if (!participation || participation.selection === "none") return { bet: null, participation: participation || { mode: "observe", selection: "none", stake: null } };
+    const { mode, selection, stake } = participation;
     const dimension = ["big", "small"].includes(selection) ? "size" : "parity";
-    const outcome = result[dimension];
-    const won = selection === outcome;
-    const payout = won ? roundMoney(stake * ODDS) : 0;
-    const net = won ? roundMoney(payout - stake) : -stake;
-    return { bet: { dimension, selection, outcome, stake, odds: ODDS, won, payout, net } };
+    const won = selection === result[dimension];
+    const payout = stake === null ? null : won ? roundMoney(stake * ODDS) : 0;
+    const net = stake === null ? null : roundMoney(payout - stake);
+    const settled = { ...participation, dimension, won, payout, net, odds: ODDS };
+    if (mode !== "simulate" || stake === null) return { bet: null, participation: settled };
+    if (!bankroll || stake > currentBalance()) throw new Error("模拟余额不足。请先在更多工具中调整模拟本金，再记录本期。");
+    return { bet: { ...settled, outcome: result[dimension] }, participation: settled };
   }
 
-  function saveQuickResultLocked() {
+  function saveQuickResultLocked(expectedForecastId) {
     els.quickMessage.className = "form-message";
     const dice = parseQuickDice(els.quickResult.value);
-    if (!dice) {
-      els.quickMessage.textContent = "请输入三个 1–6 的数字。";
-      return;
-    }
+    if (!dice) { els.quickMessage.textContent = "请输入三个 1–6 的数字。"; return; }
     ensureSession();
-    const before = sessionRecords();
-    const issue = els.quickIssue.value.trim();
-    if (issue && before.some((record) => record.issue?.trim() === issue)) {
-      els.quickMessage.textContent = "本场已经存在相同期号或备注，请核对后再保存。";
-      return;
-    }
+    const pending = pendingForecast();
+    if ((pending?.id || null) !== expectedForecastId) throw new Error("另一页面更新了待开奖预判，请核对当前期号后再记录结果。");
+    const issue = pending?.issue || els.quickIssue.value.trim();
+    if (issue && records.some((record) => record.issue === issue)) throw new Error("该期号已有记录，请核对后使用完整期号。");
+    if (pending && pending.fingerprint !== inputFingerprint()) throw new Error("锁定后历史数据已变化，请先跳过该期并留痕，再将结果补录。");
     const result = classify(dice);
-    const betResult = betForResult(result);
-    if (betResult.error) {
-      els.quickMessage.textContent = betResult.error;
-      return;
-    }
-    const state = currentModelState(before);
-    const frozenPredictions = Object.fromEntries(Object.entries(state.predictions).map(([key, prediction]) => [key, {
-      ...prediction,
-      basedOn: before.length,
-    }]));
-    const modelBlock = {
-      protocolVersion: MODEL_PROTOCOL_VERSION,
-      id: state.block.id,
-      round: state.block.round,
-      index: state.block.index,
-      position: state.block.position,
-      role: state.block.index === 0 ? "selection" : "validation",
-      lockedModelKeys: { ...state.activeKeys },
-    };
-    session.activeProtocolBlock = {
-      protocolVersion: MODEL_PROTOCOL_VERSION,
-      id: state.block.id,
-      index: state.block.index,
-      lockedModelKeys: { ...state.activeKeys },
-    };
-    records.unshift({
-      id: `result-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      issue,
-      officialDice: dice,
-      source: "quick",
-      sessionId: session.id,
-      modelProtocolVersion: MODEL_PROTOCOL_VERSION,
-      modelBlock,
-      modelPredictions: frozenPredictions,
-      modelPrediction: {
-        big: frozenPredictions[state.activeKeys.size].big,
-        small: frozenPredictions[state.activeKeys.size].small,
-        odd: frozenPredictions[state.activeKeys.parity].odd,
-        even: frozenPredictions[state.activeKeys.parity].even,
-        triple: frozenPredictions[state.activeKeys.size].triple,
-        basedOn: before.length,
-        modelKeys: state.activeKeys,
-        signals: state.signals,
-      },
-      bet: betResult.bet,
-      excludeTriples: true,
+    const settlement = betForResult(result, pending?.participation);
+    const legacyFields = pending?.legacyFields || buildLegacyFields(sessionRecords());
+    const reference = pending || LiveModel.forecast(liveItems(sessionRecords()), [], legacyFields.modelPrediction);
+    const entry = {
+      id: "result-" + Date.now() + "-" + Math.random().toString(16).slice(2),
+      issue, officialDice: dice, source: "quick", sequenceBreak: hasSequenceGap(sessionRecords()[0]),
+      sessionId: pending?.sessionId || session.id,
+      ...legacyFields,
+      forecast: pending ? { ...pending, legacyFields: undefined, fingerprint: undefined } : null,
+      referencePrediction: { version: LiveModel.VERSION, candidates: reference.candidates },
+      participation: settlement.participation,
+      bet: settlement.bet, excludeTriples: true,
       validation: { code: "unverified", label: "仅记录", exact: false, category: false, sum: false },
       createdAt: new Date().toISOString(),
-    });
-    saveRecords();
-    session.nextProtocolRound = state.block.round + 1;
-    if (session.nextProtocolRound % VALIDATION_BLOCK_SIZE === 0) session.activeProtocolBlock = null;
-    try {
-      touchSession();
-    } catch {
-      // The immutable record carries enough metadata to recover the cursor on reload.
+    };
+    ensureV5Storage();
+    const updatedRecords = [entry, ...records];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedRecords));
+    records = updatedRecords;
+    if (pending) {
+      forecastLedger = forecastLedger.map((item) => item.id === pending.id ? { ...item, status: "resolved" } : item);
+      try { localStorage.setItem(LEDGER_KEY, JSON.stringify(forecastLedger)); } catch { /* The committed result also identifies a resolved forecast. */ }
     }
+    if (entry.sessionId === session.id) {
+      session.nextProtocolRound = legacyFields.modelBlock.round + 1;
+      session.activeProtocolBlock = session.nextProtocolRound % VALIDATION_BLOCK_SIZE === 0 ? null : {
+        protocolVersion: MODEL_PROTOCOL_VERSION, id: legacyFields.modelBlock.id,
+        index: legacyFields.modelBlock.index, lockedModelKeys: legacyFields.modelBlock.lockedModelKeys,
+      };
+    }
+    try { touchSession(); } catch { /* The saved record recovers the legacy cursor. */ }
     els.quickResult.value = "";
     els.quickIssue.value = "";
+    els.participationMode.value = "observe";
     els.quickBetSelection.value = "none";
     els.quickStake.value = "";
-    els.quickStake.disabled = true;
-    els.quickResultPreview.textContent = "输入三个 1–6 的数字";
-    els.saveResult.disabled = true;
+    renderStreamers(loadArray(STREAMERS_KEY));
     els.quickMessage.className = "form-message success";
-    els.quickMessage.textContent = betResult.bet
-      ? `已记录 ${resultLabel(result)}；本轮${betResult.bet.won ? "赢" : "输"} ${formatMoney(betResult.bet.net, true)}。`
-      : `已记录 ${resultLabel(result)}，模型已更新。`;
+    els.quickMessage.textContent = "已记录 " + resultLabel(result) + (pending ? "；已验证锁定预判。" : "；按补录保存，不计提前验证。");
     renderAll();
     els.quickResult.focus();
   }
 
   async function saveQuickResult() {
     if (savingResult) return;
+    const expectedForecastId = pendingForecast()?.id || null;
     savingResult = true;
     els.saveResult.disabled = true;
     try {
       await withStorageWriteLock(() => {
         syncStoredState();
-        saveQuickResultLocked();
+        saveQuickResultLocked(expectedForecastId);
       });
     } catch (error) {
       els.quickMessage.className = "form-message";
@@ -1260,6 +1433,7 @@
     const dice = parseQuickDice(els.quickResult.value);
     els.quickResultPreview.textContent = dice ? `${diceSymbols(dice)}  ${resultLabel(classify(dice))}` : "输入三个 1–6 的数字";
     els.saveResult.disabled = savingResult || !dice;
+    els.lockForecast.disabled = savingResult || Boolean(pendingForecast()) || Boolean(els.quickResult.value.trim());
   }
 
   function renderBankroll() {
@@ -1287,7 +1461,7 @@
       els.quickHistoryList.innerHTML = '<p class="recent-rail-empty">暂无记录</p>';
       return;
     }
-    els.quickHistoryList.innerHTML = records.slice(0, 12).map((record) => {
+    els.quickHistoryList.innerHTML = records.slice(0, 30).map((record) => {
       const result = classify(record.officialDice);
       const time = new Date(record.createdAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
       const sizeChip = result.triple
@@ -1300,7 +1474,7 @@
           <div class="recent-rail-categories">${sizeChip}<strong class="category-chip parity">${LABELS[result.parity]}</strong></div>
           <span class="status unverified">${sessionTag}</span>
         </div>
-        <div class="recent-rail-secondary"><span>和值 ${result.sum} · <span class="dice">${diceSymbols(record.officialDice)}</span></span><time>${time}</time></div>
+        <div class="recent-rail-secondary"><span>${record.forecast ? LiveModel.isEvaluable(liveItems([record])[0]) ? ["size", "parity"].map((metric) => { const direction = record.forecast.decisions[metric].direction; return direction ? `预${LABELS[direction]}${result[metric] === direction ? "✓" : "×"}` : "观望"; }).join(" · ") : "验证失效" : "补录"}</span><time>${time}</time></div>
       </article>`;
     }).join("");
   }
@@ -1331,82 +1505,65 @@
   }
 
   function renderValidation() {
-    const items = sessionRecords();
-    const state = currentModelState(items);
-    const crossSession = state.crossSession;
-    const sizeConfidence = confidenceState(items, "size");
-    const parityConfidence = confidenceState(items, "parity");
-    const sizeSignals = signalMetrics(items, "size");
-    const paritySignals = signalMetrics(items, "parity");
-    const ranked = [...MODEL_DEFINITIONS]
-      .map((definition) => ({ ...definition, ...state.evaluation.models[definition.key] }))
-      .sort((first, second) => {
-        if (first.combined === null) return 1;
-        if (second.combined === null) return -1;
-        return first.combined - second.combined;
-      });
-    const score = (value) => Number.isFinite(value) ? value.toFixed(4) : "—";
-    els.modelLeaderboard.innerHTML = `
-      <div class="leaderboard-head"><span>模型</span><span>大小</span><span>单双</span><span>综合</span></div>
-      ${ranked.map((model, index) => {
-        const activeFor = [state.activeKeys.size === model.key ? "大小" : "", state.activeKeys.parity === model.key ? "单双" : ""].filter(Boolean);
-        return `<div class="leaderboard-row ${activeFor.length ? "active" : ""}">
-        <div><strong>${escapeHtml(model.name)}</strong><small>${state.evaluation.rounds ? `综合第 ${index + 1}` : "等待数据"}${activeFor.length ? ` · ${activeFor.join("/")}展示` : ""}</small></div>
-        <span>${score(model.size)}</span>
-        <span>${score(model.parity)}</span>
-        <span><b>${score(model.combined)}</b><small>${model.hitRate === null ? "无方向" : `方向命中 ${(model.hitRate * 100).toFixed(1)}%`}</small></span>
-      </div>`;
-      }).join("")}`;
-
-    const signedScore = (value) => Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(4)}` : "—";
-    const evidenceScore = (value) => {
-      if (!Number.isFinite(value)) return "—";
-      if (value >= 1e6) return `×${value.toExponential(1)}`;
-      return `×${value.toFixed(value < 10 ? 2 : 1)}`;
-    };
-    els.modelConfidenceDetails.innerHTML = [
-      { metric: "大小", confidence: sizeConfidence },
-      { metric: "单双", confidence: parityConfidence },
-    ].map(({ metric, confidence }) => {
-      const metrics = metric === "大小" ? sizeSignals : paritySignals;
-      const signal = metric === "大小" ? state.signals.size : state.signals.parity;
-      const coverage = metrics.coverage === null ? "—" : `${(metrics.coverage * 100).toFixed(1)}%`;
-      const hitRate = metrics.hitRate === null ? "—" : `${(metrics.hitRate * 100).toFixed(1)}%`;
-      return `<article>
-      <div><span>${metric}可信度</span><strong>${confidence.label}</strong></div>
-      <p>完整锁定验证策略 对比理论基准</p>
-      <small>验证样本 ${confidence.evidence.count} · Brier 平均优势 ${signedScore(confidence.evidence.mean)} · 序贯证据 ${evidenceScore(confidence.evidence.eValue)}</small>
-      <small>最高实际胜率 ${(signal.probability * 100).toFixed(1)}% · 盈亏线 ${(BREAK_EVEN_PROBABILITY * 100).toFixed(1)}% · 独立验证 ${Math.min(signal.validationStreak, 2)}/2</small>
-      <small>方向命中 ${signal.evidenceCount ? `${signal.evidenceHits}/${signal.evidenceCount}` : "—"} · 盈亏线证据 ${evidenceScore(signal.profitEValue)} · 公平线证据 ${evidenceScore(signal.fairEValue)}</small>
-      <small>信号覆盖 ${coverage} · 输出 ${metrics.decisions}/${metrics.eligible} · 命中 ${hitRate}</small>
-    </article>`;
+    const evaluated = liveItems();
+    const report = LiveModel.evaluate(evaluated);
+    const pending = pendingForecast();
+    const missing = forecastLedger.filter((entry) => entry.status === "missed").length;
+    const removed = forecastLedger.filter((entry) => entry.status !== "missed" && entry.id !== pending?.id
+      && !records.some((record) => record.forecast?.id === entry.id)).length;
+    const scoreText = (value) => value === null ? "—" : value.toFixed(4);
+    els.modelLeaderboard.innerHTML = '<div class="leaderboard-head"><span>同期对照 · 误差越低越好</span><span>大小</span><span>单双</span><span>综合</span></div>'
+      + Object.entries(LiveModel.NAMES).map(([key, name]) => {
+        const size = report.metrics.size.scores[key].loss;
+        const parity = report.metrics.parity.scores[key].loss;
+        return '<div class="leaderboard-row' + (key === "live" ? " active" : "") + '"><strong>' + name + "</strong><span>" + scoreText(size)
+          + "</span><span>" + scoreText(parity) + "</span><span>" + scoreText(size === null ? null : (size + parity) / 2) + "</span></div>";
+      }).join("");
+    els.modelConfidenceDetails.innerHTML = ["size", "parity"].map((metric) => {
+      const values = report.metrics[metric];
+      const improvement = report.count ? values.scores.baseline.loss - values.scores.live.loss : null;
+      const label = !report.count ? "暂无提前验证" : report.count < 20 ? "样本较少" : improvement > 0 ? "暂有改善 · 待验证" : "未优于基准";
+      const rate = values.issued ? (100 * values.hits / values.issued).toFixed(1) + "%" : "无方向输出";
+      return "<article><div><span>" + (metric === "size" ? "大小" : "单双") + "</span><strong>" + label + "</strong></div>"
+        + "<p>累计提前验证 " + report.count + " 轮 · 参考命中 " + rate + "</p>"
+        + "<small>出方向 " + values.issued + "/" + report.count + " · 最长连续观望 " + values.longestWait + " 轮</small>"
+        + "<small>同一出方向期次：本版 " + values.hits + " 次命中，旧版 " + values.scores.legacy.hits + " 次，固定对照 " + values.scores.baseline.hits + " 次</small>"
+        + "<small>全部期次 Brier 改善：" + (improvement === null ? "—" : (improvement >= 0 ? "+" : "") + improvement.toFixed(4)) + "</small></article>";
     }).join("");
-
-    const stabilityText = (metric, label) => {
-      const stableKey = crossSession.stable[metric];
-      if (crossSession.qualified < 3) return `<div><span>${label}</span><strong>继续收集</strong><small>${crossSession.qualified}/3 个合格场次</small></div>`;
-      if (!stableKey) return `<div><span>${label}</span><strong>尚未稳定</strong><small>没有模型重复胜出</small></div>`;
-      return `<div><span>${label}</span><strong>${escapeHtml(modelName(stableKey))}</strong><small>${crossSession.wins[metric][stableKey]}/${crossSession.qualified} 场胜出 · 多场稳定</small></div>`;
-    };
-    els.crossSessionStability.innerHTML = `<div class="stability-heading"><span>跨场稳定性</span><strong>${crossSession.qualified} 个合格场次</strong></div><div class="stability-grid">${stabilityText("size", "大小")}${stabilityText("parity", "单双")}</div>`;
-
-    const tips = ["首段 10 轮只选模；证据仅统计开奖前已锁定且完整结束的验证段。", "试验信号要求盈亏线证据达到 ×40；稳定信号还需连续两段胜出、盈亏线 ×200 且 Brier 证据 ×40。", "误报上限只针对单场，并要求每期开奖连续、完整、无选择地录入；漏记或重复会使上限失效。", "反复新建场次同样会累计误报概率。", "大小内部按大、小、三同号三分类评分；页面仍将大小归一化为 100%。", "合格旧场次最多只折算为 5 轮先验；当场最近 10 轮明显不一致时自动停用。"];
-    const incompleteBlocks = Array.from({ length: state.block.index }, (_, index) => index)
-      .filter((index) => !completeBlockRecords(items, index).length);
-    if (incompleteBlocks.length) tips.push(`有 ${incompleteBlocks.length} 个历史分段存在缺失，已整体排除，不会重排后续轮次。`);
-    const legacyCount = items.length - state.evaluation.rounds;
-    if (legacyCount > 0) tips.push(`本场有 ${legacyCount} 条旧版或截图记录用于计算概率，但不参与六模型公平排名。`);
-    const changing = [["大小", state.changes.size], ["单双", state.changes.parity]].filter(([, change]) => change.active).map(([metric]) => metric);
-    if (changing.length) tips.push(`${changing.join("、")}检测到近期分布变化，信号已暂停，等待动态模型适应。`);
-    if (state.block.index === 0) {
-      tips.push(`首段进度 ${state.block.position}/${VALIDATION_BLOCK_SIZE}；固定使用 50% 基准。`);
-    } else {
-      const bothBaseline = state.activeKeys.size === "baseline" && state.activeKeys.parity === "baseline";
-      tips.push(bothBaseline
-        ? `第 ${state.block.index + 1} 段大小与单双均锁定 50% 基准。`
-        : `第 ${state.block.index + 1} 段已分别锁定模型；${state.evaluation.rounds < 100 ? "仍处于实验状态。" : "已达到初步比较样本。"}`);
-    }
-    els.validationList.innerHTML = tips.map((tip) => `<li>${tip}</li>`).join("");
+    const modes = ["actual", "simulate", "observe"].map((mode) => {
+      const entries = evaluated.filter(LiveModel.isEvaluable).filter((record) => record.participation?.mode === mode);
+      const selected = entries.filter((record) => record.participation.selection !== "none");
+      const wins = selected.filter((record) => record.participation.won).length;
+      const net = entries.reduce((sum, record) => sum + (Number(record.participation.net) || 0), 0);
+      return "<div><span>" + ({ actual: "实际参与", simulate: "模拟选择", observe: "观望记录" })[mode] + "</span><strong>" + entries.length
+        + " 轮</strong><small>" + (mode === "observe" ? "不混入参与命中率" : "选择命中 " + wins + "/" + selected.length + " · 已填金额净额 " + formatMoney(net, true)) + "</small></div>";
+    }).join("");
+    const callers = new Map();
+    evaluated.filter(LiveModel.isEvaluable).forEach((record) => {
+      record.forecast.streamers.forEach((streamer) => {
+        if (!callers.has(streamer.name)) callers.set(streamer.name, { size: 0, sizeHits: 0, parity: 0, parityHits: 0 });
+        const data = callers.get(streamer.name), result = classify(record.officialDice);
+        for (const metric of ["size", "parity"]) {
+          if (streamer[metric] === "none") continue;
+          data[metric] += 1;
+          if (streamer[metric] === result[metric]) data[metric + "Hits"] += 1;
+        }
+      });
+    });
+    const streamerText = [...callers].map(([name, value]) => escapeHtml(name) + "：大小 " + value.sizeHits + "/" + value.size + "，单双 " + value.parityHits + "/" + value.parity);
+    els.crossSessionStability.innerHTML = '<div class="stability-heading"><span>真实、模拟与观望分开</span></div><div class="stability-grid participation-grid">' + modes + "</div>"
+      + '<p class="fine-print">' + (streamerText.length ? "主播累计命中（各场独立学习） · " + streamerText.join("；") : "尚无已验证的主播提前判断。") + "</p>";
+    const tips = [
+      "只统计开奖前手动锁定并已录入结果的 V5 记录；补录、旧版本与失效记录不计入。",
+      "所有模型在相同的锁定期次对照；出方向的子集也在相同期次比较，固定对照为大/单。",
+      "概率和权重按事先固定规则逐轮更新。观望不设强制结束轮数；旧版误报上限不适用于本版。",
+      "主播同向、反向关联只从已锁定记录学习；多人判断取平均，不当作独立证据相乘。",
+      "个人行为只记录和分组统计，未用于主概率；无法由个人输赢确认后台动机。",
+      "真实参与的结果不能用模拟反选收益替代。大小三同号按未命中结算。",
+      "本机时间不能证明官方开奖时间；请连续、无选择地记录，缺期会降低结论可信度。",
+      "已留痕漏期 " + missing + " 条；删除后无结果的锁定记录 " + removed + " 条。所有结论仍待后续数据验证。",
+    ];
+    els.validationList.innerHTML = tips.map((tip) => "<li>" + tip + "</li>").join("");
   }
 
   function renderRecords() {
@@ -1422,7 +1579,7 @@
       return `<tr>
         <td><strong>${escapeHtml(record.issue || "未填期号")}</strong><span class="subline">${time}</span></td>
         <td><span class="dice">${diceSymbols(record.officialDice)}</span><span class="subline">${resultLabel(result)}</span></td>
-        <td><span class="model-record">${predictionText(record.modelPrediction)}</span></td>
+        <td><span class="model-record">${record.forecast ? `V5 ${LiveModel.isEvaluable(liveItems([record])[0]) ? "提前锁定" : "验证失效"} · ${predictionText(record.forecast.candidates.live)}` : "补录 / 旧版，不计 V5 验证"}</span>${record.participation?.mode === "actual" ? `<span class="subline">实际参与 ${LABELS[record.participation.selection] || "—"} · ${record.participation.won ? "命中" : "未命中"}${record.participation.net === null ? "" : ` · ${formatMoney(record.participation.net, true)}`}</span>` : ""}</td>
         <td>${settlement}</td>
         <td><strong>${balances.has(record.id) ? formatMoney(balances.get(record.id)) : "—"}</strong></td>
         <td><button class="icon-button" type="button" data-delete-id="${record.id}" aria-label="删除这条记录">删除</button></td>
@@ -1538,6 +1695,8 @@
 
   function importOcrRecordsLocked() {
     ensureSession();
+    if (pendingForecast()) throw new Error("请先完成待开奖预判，再导入历史截图。");
+    ensureV5Storage();
     const imported = [];
     let invalid = 0;
     let duplicates = 0;
@@ -1596,42 +1755,43 @@
   }
 
   function exportCsv() {
-    if (!records.length) {
+    if (!records.length && !forecastLedger.length) {
       els.quickMessage.className = "form-message";
       els.quickMessage.textContent = "暂无可导出的记录。";
       return;
     }
     const balances = balanceAfterEachRecord();
-    const rows = [["期号/备注", "时间", "场次", "骰子", "和值", "大小", "单双", "当时展示模型", "固定50%预测", "静态贝叶斯预测", "动态贝叶斯预测", "分位置偏差预测", "无序骰子偏差预测", "加权组合预测", "大小信号", "单双信号", "模拟方向", "投入", "赔率", "返还", "净盈亏", "轮后余额", "来源"]];
-    records.forEach((record) => {
-      const result = classify(record.officialDice);
+    const rows = [["期号/备注", "验证状态", "结果录入时间", "锁定时间", "场次", "骰子", "和值", "大小", "单双", "锁定大%（不含三同号）", "锁定小%（不含三同号）", "锁定单%", "锁定双%", "大小参考", "单双参考", "主播提前判断", "参与方式", "选择", "金额", "赔率", "返还", "净盈亏", "模拟轮后余额", "来源", "完整审计明细JSON"]];
+    const appendRow = (record, frozen, status) => {
+      const result = record ? classify(record.officialDice) : null;
+      const participation = record?.participation || frozen?.participation || (record?.bet ? { mode: "simulate", ...record.bet } : {});
+      const p = frozen?.candidates.live;
+      const percent = (value) => Number.isFinite(value) ? (100 * value).toFixed(2) : "";
       rows.push([
-        record.issue || "",
-        new Date(record.createdAt).toLocaleString("zh-CN", { hour12: false }),
-        record.sessionId || "",
-        record.officialDice.join("-"),
-        result.sum,
-        result.triple ? "三同号" : LABELS[result.size],
-        LABELS[result.parity],
-        predictionText(record.modelPrediction),
-        record.modelPredictions ? predictionText(record.modelPredictions.baseline) : "",
-        record.modelPredictions ? predictionText(record.modelPredictions.static) : "",
-        record.modelPredictions ? predictionText(record.modelPredictions.dynamic) : "",
-        record.modelPredictions?.diceBias ? predictionText(record.modelPredictions.diceBias) : "",
-        record.modelPredictions?.pooledBias ? predictionText(record.modelPredictions.pooledBias) : "",
-        record.modelPredictions?.ensemble ? predictionText(record.modelPredictions.ensemble) : "",
-        record.modelPrediction?.signals?.size?.label || "",
-        record.modelPrediction?.signals?.parity?.label || "",
-        record.bet ? LABELS[record.bet.selection] || record.bet.selection : "",
-        record.bet?.stake ?? "",
-        record.bet?.odds ?? "",
-        record.bet?.payout ?? "",
-        record.bet?.net ?? "",
-        balances.get(record.id) ?? "",
-        record.source || "legacy",
+        record?.issue || frozen?.issue || "", status,
+        record?.createdAt || "", frozen?.lockedAt || "", record?.sessionId || frozen?.sessionId || "",
+        record?.officialDice.join("-") || "", result?.sum ?? "",
+        result ? result.triple ? "三同号" : LABELS[result.size] : "", result ? LABELS[result.parity] : "",
+        percent(p?.big), percent(p?.small), percent(p?.odd), percent(p?.even),
+        frozen ? LABELS[frozen.decisions.size.direction] || "观望" : "",
+        frozen ? LABELS[frozen.decisions.parity.direction] || "观望" : "",
+        frozen ? JSON.stringify(frozen.streamers) : "",
+        ({ observe: "观望", simulate: "模拟", actual: "实际" })[participation.mode] || "",
+        LABELS[participation.selection] || "", participation.stake ?? "", participation.odds ?? (frozen ? ODDS : ""),
+        participation.payout ?? "", participation.net ?? "", balances.get(record?.id) ?? "",
+        record?.source || (record ? "legacy" : "forecast-ledger"), JSON.stringify(record || frozen),
       ]);
+    };
+    liveItems().forEach((record) => appendRow(record, record.forecast,
+      LiveModel.isEvaluable(record) ? "已提前验证" : record.evidenceInvalidated ? "场次已作废" : "补录或旧版"));
+    forecastLedger.filter((entry) => !records.some((record) => record.forecast?.id === entry.id)).forEach((entry) => {
+      const status = entry.status === "missed" ? "漏期留痕" : invalidatedSessions.has(entry.sessionId) || entry.status === "resolved" ? "删除或失效留痕" : "待开奖";
+      appendRow(null, entry, status);
     });
-    const csv = "\ufeff" + rows.map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+    const csv = "\ufeff" + rows.map((row) => row.map((cell) => {
+      const value = typeof cell === "string" && /^[=+\-@\t\r]/.test(cell) ? "'" + cell : String(cell ?? "");
+      return '"' + value.replace(/"/g, '""') + '"';
+    }).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1669,10 +1829,34 @@
     if (event.key === "Enter" && !els.saveResult.disabled) saveQuickResult();
   });
   els.saveResult.addEventListener("click", saveQuickResult);
+  els.lockForecast.addEventListener("click", lockNextForecast);
+  els.skipForecast.addEventListener("click", skipPendingForecast);
+  els.addStreamer.addEventListener("click", () => {
+    if (pendingForecast() || els.streamerInputs.children.length >= 2) return;
+    const entries = [...els.streamerInputs.querySelectorAll(".streamer-row")].map((row) => ({
+      name: row.querySelector("[data-streamer-name]").value,
+      size: row.querySelector("[data-streamer-size]").value,
+      parity: row.querySelector("[data-streamer-parity]").value,
+    }));
+    renderStreamers([...entries, { name: "" }]);
+    els.streamerInputs.lastElementChild.querySelector("input").focus();
+  });
+  els.streamerInputs.addEventListener("click", (event) => {
+    if (!event.target.closest("[data-remove-streamer]") || pendingForecast()) return;
+    event.target.closest(".streamer-row").remove();
+    renderModel();
+  });
+  els.streamerInputs.addEventListener("change", renderModel);
+  els.participationMode.addEventListener("change", () => {
+    if (els.participationMode.value === "observe") { els.quickBetSelection.value = "none"; els.quickStake.value = ""; }
+    renderModel();
+  });
   els.startNewSession.addEventListener("click", async () => {
     try {
       await withStorageWriteLock(() => {
         syncStoredState();
+        if (pendingForecast()) throw new Error("请先完成或跳过待开奖预判，再开始新场次。");
+        ensureV5Storage();
         session = newSession();
         renderAll();
         els.quickMessage.className = "form-message success";
@@ -1684,17 +1868,14 @@
     }
   });
   els.quickBetSelection.addEventListener("change", () => {
-    const enabled = els.quickBetSelection.value !== "none";
-    els.quickStake.disabled = !enabled;
-    if (!enabled) els.quickStake.value = "";
-    els.quickStakeHint.textContent = enabled
-      ? bankroll ? `当前模拟余额 ${formatMoney(currentBalance())}；最低投入 2 元。` : "请先在“更多工具”里设置模拟本金。"
-      : "选择方向后填写投入；页面不会推荐投入额。";
+    if (els.quickBetSelection.value === "none") els.quickStake.value = "";
+    renderModel();
   });
   els.saveBankroll.addEventListener("click", async () => {
     try {
       await withStorageWriteLock(() => {
         syncStoredState();
+        ensureV5Storage();
         els.bankrollMessage.className = "form-message";
         const initial = roundMoney(Number(els.initialBankroll.value));
         if (!Number.isFinite(initial) || initial < 2) {
@@ -1723,8 +1904,12 @@
     if (els.confirmDialog.returnValue !== "confirm") return;
     try {
       await withStorageWriteLock(() => {
+        syncStoredState();
+        ensureV5Storage();
         records = [];
         saveRecords();
+        forecastLedger = [];
+        localStorage.setItem(LEDGER_KEY, "[]");
         invalidatedSessions = new Set();
         saveInvalidatedSessions();
         try {
@@ -1746,6 +1931,7 @@
     try {
       await withStorageWriteLock(() => {
         syncStoredState();
+        ensureV5Storage();
         const target = records.find((record) => record.id === recordId);
         if (!target) return;
         const invalidatesEvidence = validModelBlock(target);
@@ -1798,7 +1984,7 @@
   els.importOcrRecords.addEventListener("click", importOcrRecords);
   els.clearOcrResults.addEventListener("click", resetOcrResults);
   window.addEventListener("storage", (event) => {
-    if (![STORAGE_KEY, BANKROLL_KEY, SESSION_KEY, INVALIDATED_SESSIONS_KEY].includes(event.key)) return;
+    if (![STORAGE_KEY, BANKROLL_KEY, SESSION_KEY, INVALIDATED_SESSIONS_KEY, LEDGER_KEY].includes(event.key) && event.key !== null) return;
     clearTimeout(storageSyncTimer);
     storageSyncTimer = setTimeout(async () => {
       if (savingResult) return;
@@ -1813,5 +1999,6 @@
     }, 75);
   });
 
+  renderStreamers(pendingForecast()?.streamers || loadArray(STREAMERS_KEY));
   renderAll();
 })();
